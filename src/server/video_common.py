@@ -81,8 +81,7 @@ def attach_upscale(
 
     # **既存ノードを踏まないこと。** 拡大段は node_prefix から 3つの ID を作るので、
     # 本体側が同じ番号を使っていると黙って上書きし、その出力を参照している
-    # ノードが「tuple index out of range」で落ちる(2026-08-12 に IC-LoRA で踏んだ。
-    # 60/61/62 が LoRA・パラメータ・AddGuide と衝突していた)
+    # ノードが「tuple index out of range」で落ちる
     taken = [f"{node_prefix}{i}" for i in (0, 1, 2) if f"{node_prefix}{i}" in wf]
     if taken:
         raise ValueError(

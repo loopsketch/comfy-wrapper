@@ -78,7 +78,7 @@ tar xzf {TARBALL} -C {WORK} --strip-components=1
 echo "[2/5] ComfyUI を取得"
 # **clone も粘る。** ウェイト取得は resilient_download.py が再開できるのに、ここだけ
 # 一発勝負だった。GitHub に繋がらず 132秒でタイムアウトし、確保したランタイムを
-# まるごと捨てた(2026-08-12)。Colab の回線は当たり外れがある
+# まるごと捨てた。Colab の回線は当たり外れがある
 if [ ! -d {COMFY} ]; then
   for attempt in 1 2 3; do
     git clone --depth 1 https://github.com/comfyanonymous/ComfyUI {COMFY} && break

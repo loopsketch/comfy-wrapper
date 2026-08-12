@@ -136,7 +136,7 @@ def cmd_submit(args) -> int:
 
     # **縦横が食い違うと中央でクロップされる。** 歪みはしないが被写体が切り落とされる。
     # 縦のクリップに --size 1080p を当てて、人物の頭と足元が消えたのに気づかず
-    # 仕上げを1本まるごと捨てた(2026-08-12)。RAM は止めるのにここは素通しだった
+    # 仕上げを1本まるごと捨てた。RAM は止めるのにここは素通しだった
     if width:
         src_portrait = src["height"] > src["width"]
         if src_portrait != (height > width):

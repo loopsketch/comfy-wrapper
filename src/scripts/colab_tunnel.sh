@@ -7,10 +7,7 @@
 #   [colab] Already-active SSH session (HTTP 429): another `colab ssh` is connected
 #
 # で弾かれる。docker の restart に任せて秒単位で叩き直すと **自分で自分を締め出して
-# 復帰できなくなる**。2026-08-12 に実際に踏んだ: 取得直後で負荷の高いランタイムに
-# 繋ぎにいって banner exchange でタイムアウトし、以降ずっと 429 で再起動を繰り返した。
-#
-# なので待ってから張り直す。間隔は失敗のたびに倍にして、上限で頭打ちにする。
+# 復帰できなくなる**。待ってから張り直し、間隔は失敗のたびに倍にして上限で頭打ちにする。
 #
 #   COLAB_SESSION              セッション名(既定 comfy)
 #   COLAB_TUNNEL_RETRY_SECONDS 最初の待ち(既定 30秒)

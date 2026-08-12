@@ -157,7 +157,7 @@ def build(
     last_frame: str | None = None,
     audio: str | None = None,
     lightning: bool = True,
-    filename_prefix: str = "video/mvc_wan",
+    filename_prefix: str = "video/cw_wan",
 ) -> dict:
     """Wan2.2 のワークフローを返す。first_frame があれば i2v、無ければ t2v。"""
     if model not in MODELS:

@@ -156,7 +156,7 @@ def build_fl2va(
     steps: int = 20,
     first_frame: str | None = None,
     last_frame: str | None = None,
-    filename_prefix: str = "video/mvc_h3",
+    filename_prefix: str = "video/cw_h3",
     scheduler: str = "simple",
 ) -> dict:
     """t2v / i2v / 先頭・末尾フレーム指定(fl2va モデル)のワークフロー。"""
@@ -190,7 +190,7 @@ def build_ref2va(
     ref_videos: list[str] | None = None,
     ref_audios: list[str] | None = None,
     ref_image_size: str = "match",
-    filename_prefix: str = "video/mvc_h3",
+    filename_prefix: str = "video/cw_h3",
     scheduler: str = "beta",
 ) -> dict:
     """参照画像・参照動画・参照音声つき(ref2va モデル)のワークフロー。

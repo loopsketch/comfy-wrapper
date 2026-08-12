@@ -11,7 +11,7 @@ ComfyUI の導入 → 依存のインストール → H3 ウェイトの取得 �
 
 **取得のあと、そのままサーバまで起動する。** 人が colab_serve.py を打つまでの間は
 取得も生成も起動も走っておらず、見張りがアイドルと見て自動停止させてしまう
-(2026-08-08 に踏んだ)。人が見ていない前提なので、待ちを作らない。
+。人が見ていない前提なので、待ちを作らない。
 """
 
 import subprocess
@@ -29,10 +29,8 @@ KEYS = Path("/content/comfy-keys.json")  # colab_key.sh が送るハッシュだ
 # /content の 112.6GB に対して取得キャッシュぶんの余裕が無くなる。
 #
 # colab_run.sh --models で上書きできる(/content/setup-models.txt 経由)。
-# **回ごとに指定すること。** i2v を回すつもりで ref2va だけを落とし、生成の直前に
-# 気づく事故を避ける。既定を fl2va にしてあるのは、静止画から動かす i2v が使うのが
-# fl2va だけだから(README「ウェイトの選択」と揃えている)。以前は前回の用途
-# (ref2va)が定数に残っていて、README の記述とも食い違っていた
+# **回ごとに指定すること。** i2v を回すつもりで ref2va だけを落とす事故を避ける。
+# 既定が fl2va なのは、静止画から動かす i2v が使うのが fl2va だけだから。
 TASKS = "fl2va"
 
 _tasks_override = Path("/content/setup-models.txt")
@@ -61,13 +59,13 @@ fi
 # **取得は resilient_download.py が担う。** Xet は速いが無応答で固まることがあり、
 # `HF_HUB_DOWNLOAD_TIMEOUT` が効かない(Python の HTTP 層を通らないため)。
 # 一方 `HF_HUB_DISABLE_XET=1` にすると 469MB/s が 4〜29MB/s まで落ち、42.5GB では
-# 成立しない(2026-08-09 実測)。**Xet のまま取り、外から無進捗を見て殺す**。
+# 成立しない。**Xet のまま取り、外から無進捗を見て殺す**。
 # 最後の1回だけ Xet を切って挑む。
 
 # **hf_transfer は既定で使わない。** Rust 実装で速い(実測 566MB/s)が、Python の
 # HTTP 層を通らないため HF_HUB_DOWNLOAD_TIMEOUT が効かない。止まっても例外が
-# 上がらず、download_*.py のリトライに入れないまま無応答になる。実際に 43分
-# 空転させた(2026-08-08)。速さより、止まったら気づいて再開できることを取る。
+# 上がらず、download_*.py のリトライに入れないまま無応答になる。速さより、
+# 止まったら気づいて再開できることを取る。
 # 使いたいときは CW_HF_TRANSFER=1。
 if [ "${{CW_HF_TRANSFER:-0}}" = "1" ]; then
   pip install -q hf_transfer 2>/dev/null && export HF_HUB_ENABLE_HF_TRANSFER=1 \
@@ -77,7 +75,7 @@ export HF_HUB_DOWNLOAD_TIMEOUT=30
 # **バッファリングを切る。** リダイレクト先がファイルだと Python の標準出力は
 # ブロックバッファになり、setup.log に何も落ちない。実際、取得が止まった回の
 # ログは「[4/5] ウェイトを取得」で終わっていて、どのファイルで止まったのかも
-# 分からなかった(2026-08-09)。見えないログは無いのと同じ
+# 分からなかった。見えないログは無いのと同じ
 export PYTHONUNBUFFERED=1
 
 # 起動に要るものは取得の前に確かめる。最後に気づくと構築の20〜25分がまるごと課金の無駄になる
@@ -94,7 +92,7 @@ tar xzf {TARBALL} -C {WORK} --strip-components=1
 echo "[2/5] ComfyUI を取得"
 # **clone も粘る。** ウェイト取得は resilient_download.py が再開できるのに、ここだけ
 # 一発勝負だった。GitHub に繋がらず 132秒でタイムアウトし、確保したランタイムを
-# まるごと捨てた(2026-08-12)。Colab の回線は当たり外れがある
+# まるごと捨てた。Colab の回線は当たり外れがある
 if [ ! -d {COMFY} ]; then
   for attempt in 1 2 3; do
     git clone --depth 1 https://github.com/comfyanonymous/ComfyUI {COMFY} && break
@@ -118,7 +116,7 @@ python {WORK}/setup/download_models.py --comfy {COMFY} --quant {QUANT} --tasks {
 # **Xet のチャンクキャッシュを捨てる。** 取得はウェイトの実体とは別に Xet の
 # チャンクを抱えるので、そのぶん丸々二重に効く。画像モデル側で /content 112.6GB を
 # 使い切り、参照画像のアップロードが `No space left on device` で 500 になった
-# (2026-08-10)。fl2va + ref2va の 63.5GB を入れる回はここが効く。
+#。fl2va + ref2va の 63.5GB を入れる回はここが効く。
 # ウェイトの実体(local_dir 配下)は消さない。
 rm -rf /root/.cache/huggingface/xet {COMFY}/models/.cache
 df -h /content | tail -1

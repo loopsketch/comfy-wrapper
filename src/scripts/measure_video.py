@@ -2,7 +2,7 @@
 
     # 1本目(ウェイトを VRAM へ積むところから)
     docker compose run --rm client src/scripts/measure_video.py \
-      submit works/monochrome-buddy-3/produce/stills/e2c02.png --model wan2.2 --aspect 9x16
+      submit works/still.png --model wan2.2 --aspect 9x16
     # 進捗を見る(succeeded なら動画も回収する)
     docker compose run --rm client src/scripts/measure_video.py \
       status --model wan2.2
@@ -49,7 +49,6 @@ ENDPOINT = colab_link.read_endpoint()
 STATE_DIR = Path("/app/works/.verify")
 
 # Wan / LTX は H3 のような形式プロンプトを取らないので、素のシネマ的な描写で書く。
-# 中身は measure_h3.py と同じ場面にしてある(絵も見比べられるように)。
 PROMPT = (
     "A young woman in a light denim jacket and striped top pushes a red shopping cart "
     "straight toward the camera down a bright supermarket aisle. She leans over the "
@@ -195,7 +194,7 @@ def cmd_status(args) -> int:
             # 終わったものの記録は残す(report が使う)。終わっていなかったものは
             # **lost にして片づける。** running のまま残すと submit のガードが
             # 永久に「まだ終わっていない run がある」と言い続け、そのモデルは
-            # --force なしでは二度と投げられなくなる(2026-08-12 に踏んだ)
+            # --force なしでは二度と投げられなくなる
             if run.get("status") not in TERMINAL:
                 run["status"] = "lost"
             print(f"{run['run']}本目 {run['job_id']}: 前のセッションのジョブ (台帳から消えている)")

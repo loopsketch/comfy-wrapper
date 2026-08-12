@@ -174,7 +174,7 @@ def build(
     first_frame: str | None = None,
     ref_sheet: str | None = None,
     ic_strength: float = 1.0,
-    filename_prefix: str = "video/mvc_ltx",
+    filename_prefix: str = "video/cw_ltx",
     gguf: bool = False,
 ) -> dict:
     """LTX-2.3 のワークフローを返す。first_frame があれば i2v、無ければ t2v。
@@ -184,11 +184,10 @@ def build(
     ref_sheet を渡すと IC-LoRA "Ingredients" を積み、参照シート(キャラ・小物・場所を
     1枚に並べたもの)を in-context の参照として通しで効かせる。**引いたときに初めて
     見える形**をここで補う(先頭フレームだけだと、画面外だった部分をモデルが作り話で
-    埋める。カートのカゴが消えて骨組みになった 2026-08-11)。
+    埋める)。
 
     公式の IC テンプレートは 8step の単パスだが、こちらは2段構えのまま足している。
-    単パスで試したらカートの形は直った代わりに**カメラが破綻した**(後半で床に落ちて
-    被写体が画面外へ出た 2026-08-12)。構図を保っているのは前半パスの方。
+    単パスにするとカメラが破綻することがあり、構図を保っているのは前半パス。
     """
     if width % CANVAS_MULTIPLE or height % CANVAS_MULTIPLE:
         raise ValueError(f"width/height は {CANVAS_MULTIPLE} の倍数にしてください")

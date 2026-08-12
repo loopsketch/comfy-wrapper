@@ -11,12 +11,10 @@
    起動直後に1回、以降は COLAB_AUTH_CHECK_MINUTES ごとに延長を試す(colab_auth.py)。
 
 3 が要る理由: GPU の稼働時間で課金されるのに、待ちに入ると誰も止めない。
-2026-08-08 に 212分(221円)を空転させた。見張りが「知らせるだけ」だったため、
-人が見ていない時間がそのまま課金になった。**人が見ていない前提で設計する。**
+**人が見ていない前提で設計する。**
 
-4 が要る理由: 認証が切れると probe が何も返さなくなるが、以前はその失敗を黙って
-捨てていた。**見張りが盲目になったことに気づけないのが一番まずい。** ランタイムが
-生きていれば課金は続くのに、ログには何も出ないまま上限まで回っていた。
+4 が要る理由: 認証が切れると probe が何も返さなくなる。**見張りが盲目になったことに
+気づけないのが一番まずい。** ランタイムが生きていれば課金は続く。
 
     COLAB_MAX_MINUTES   確保からの上限(既定 30分)。超えたら止める
     COLAB_IDLE_MINUTES  何も進んでいない状態の許容(既定 8分)。超えたら止める
@@ -37,7 +35,7 @@ works/.rescue/<セッション名>/<ディレクトリ名>/。
 - ComfyUI のキューに積まれている        … 生成中
 - ComfyUI / uvicorn のプロセスがある     … 起動中(H3 は 21GB を積むので数分かかる)
 
-この3つを見ないと誤って止める。実際、取得直後の ComfyUI 起動待ちで止めてしまった。
+この3つを見ないと、取得直後の ComfyUI 起動待ちなどで誤って止めることになる。
 
 準備できてから最初の1件が来るまでは、手元で produce を叩く時間が要るので許容を長めに
 取る(COLAB_READY_IDLE_MINUTES)。1件でも通ったあとは通常の許容に戻す。
@@ -59,14 +57,13 @@ SESSIONS = Path("/app/.colab/.config/colab-cli/sessions.json")
 LOG = Path("/app/.colab/keepalive-watch.log")
 # 機械が読む状態。**ログの日本語を grep して制御を決めない。**
 # 起動行の「アイドル 8分で自動停止」が停止判定にヒットして、構築開始15秒で
-# 自分を止めた(2026-08-09)。人が読む文と機械が読む状態は別物にする。
+# 自分を止めた。人が読む文と機械が読む状態は別物にする。
 STATE = Path("/app/.colab/watch-state.json")
 
 MAX_MINUTES = float(os.environ.get("COLAB_MAX_MINUTES", "30"))
 IDLE_MINUTES = float(os.environ.get("COLAB_IDLE_MINUTES", "8"))
 READY_IDLE_MINUTES = float(os.environ.get("COLAB_READY_IDLE_MINUTES", "15"))
-# 起動待ちで待てる上限。**待つ理由には必ず期限を付ける。** 期限の無い待ちを1つ作った
-# だけで、アイドル検知がまるごと死んで43分空転した(2026-08-08)
+# 起動待ちで待てる上限。**待つ理由には必ず期限を付ける。**
 BOOT_MINUTES = float(os.environ.get("COLAB_BOOT_MINUTES", "10"))
 INTERVAL = float(os.environ.get("COLAB_WATCH_INTERVAL", "30"))
 # 認証を確認する間隔。**既定の上限(30分)だと実質「起動直後の1回」になる。**
@@ -77,11 +74,11 @@ STOP_TRIES = int(os.environ.get("COLAB_STOP_TRIES", "3"))
 STOP_TIMEOUT = float(os.environ.get("COLAB_STOP_TIMEOUT", "120"))
 # 止める前に回収する Colab 側のディレクトリ。生成物の置き場を並べておく
 # **/content/logs を必ず入れる。** ランタイムを止めると消えるため、5回失敗しても
-# 取得エラーを一度も読めなかった(2026-08-09)。失敗の理由こそ持ち帰る価値がある
+# 取得エラーを一度も読めなかった。失敗の理由こそ持ち帰る価値がある
 RESCUE_DIRS = [
     d for d in os.environ.get(
         "COLAB_RESCUE_DIRS",
-        "/content/logs:/content/bench:/content/sheets:/content/fix:/content/jobs",
+        "/content/logs:/content/jobs",
     ).split(":") if d
 ]
 RESCUE_ROOT = Path("/app/works/.rescue")
@@ -90,20 +87,19 @@ RESCUE_ROOT = Path("/app/works/.rescue")
 #
 # ディスクの使用量だけでは足りない。hf_hub_download は 19GB 級の1ファイルを
 # `.incomplete` に書き続けるため、その最中は使用量の刻みが粗く「止まっている」ように
-# 見える(実際に誤って止めた)。**書きかけファイルの合計サイズ**を足して見る。
+# 見える。**書きかけファイルの合計サイズ**を足して見る。
 PROBE = """
 import json, os, shutil, urllib.request
 from pathlib import Path
 t, u, f = shutil.disk_usage('/content')
 
-# HF のキャッシュは /content と同じファイルシステムに載る(2026-08-09 に実測。
-# st_dev が一致)。別ファイルシステムを疑って使用量を足したことがあるが、
+# HF のキャッシュは /content と同じファイルシステムに載る。別ファイルシステムを疑って使用量を足したことがあるが、
 # 二重計上になるだけで進捗の判定は変わらなかったので戻した。
 #
 # **書きかけの置き場は2種類ある。** download_image_models.py は素の
 # hf_hub_download なので /root/.cache/huggingface に落ちるが、
 # download_models.py(H3) は local_dir を渡すので ComfyUI/models/.cache に落ちる。
-# 片方しか見ないと、H3 の取得中ずっと「書きかけ 0.0GB」に見える(2026-08-09)。
+# 片方しか見ないと、H3 の取得中ずっと「書きかけ 0.0GB」に見える。
 inc = 0
 for base in ('/root/.cache/huggingface',
              str(Path.home() / '.cache' / 'huggingface'),
@@ -125,7 +121,7 @@ except Exception:
 # **API(8000) も見る。** 生成は ComfyUI ではなく API を通して投げるので、
 # API だけ落ちていると手元からは何も投げられないのに、見張りは「ComfyUI は
 # 生きている」と見て黙っている。API が上がらないまま生成を投げて
-# ConnectionReset で落ちたことがある(2026-08-09)
+# ConnectionReset で落ちたことがある
 try:
     urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()
     api = True
@@ -136,8 +132,7 @@ except Exception:
 #
 # **pgrep は使わない。** `subprocess.run("pgrep -f '<pattern>'", shell=True)` は
 # sh のコマンドラインにパターン文字列が載るため、pgrep -f が自分自身を拾って
-# **常に true** を返す。アイドル検知がまるごと無効になり、取得が止まったまま43分
-# 空転させた(2026-08-08)。
+# **常に true** を返し、アイドル検知がまるごと無効になる。
 #
 # /proc を見る場合も同じ罠がある。この probe 自身のコマンドラインに探す文字列が
 # 載るため、**自分の pid を除く**のと、**探す文字列をソースに直接書かない**
@@ -191,9 +186,8 @@ def _alive(session: str) -> bool:
 def _probe(session: str) -> tuple[dict | None, str | None]:
     """Colab 側の使用量と ComfyUI のキュー数を取る。返すのは (結果, 失敗の理由)。
 
-    **失敗の理由を捨てない。** 以前は None を返すだけだったので、認証が切れて何も
-    見えていないのか、ランタイムが落ちたのかがログから判別できなかった。
-    見張りが盲目になったことに気づけるようにする。
+    **失敗の理由を捨てない。** 認証切れとランタイム消失は、理由を残さないと
+    ログから区別できない。
     """
     try:
         r = subprocess.run(
@@ -287,11 +281,9 @@ def _rescue(session: str) -> None:
 def _stop(session: str, reason: str) -> None:
     """止める。**ここで諦めない。** 止め損ねると課金だけが続く。
 
-    以前は `colab stop` を1回叩くだけで、返ってこないと TimeoutExpired が
-    そのまま上がって見張りごと死んでいた。状態も書かれず、ランタイムは生きたまま
-    誰も見ていない状態になる(2026-08-12 に踏んだ。無進捗で止めたはずが、
-    9分後もサーバ側にセッションが残っていた)。**見張りの存在理由が課金の打ち切り
-    である以上、ここだけは落ちてはいけない。**
+    `colab stop` が返ってこないことがある。例外で見張りごと死ぬと、ランタイムは
+    生きたまま誰も見ていない状態になる。**課金の打ち切りが存在理由である以上、
+    ここだけは落ちてはいけない。**
     """
     _log(f"**自動停止**: {reason}")
     _rescue(session)
@@ -322,7 +314,7 @@ def _stop(session: str, reason: str) -> None:
 
     # **状態は回収と停止が終わってから書く。** 先に書くと、これを見た colab_run.sh が
     # 後片付けで見張りを pkill し、回収が始まる前に殺してしまう。実際それで
-    # setup.log を取り逃がした(2026-08-09)。
+    # setup.log を取り逃がした。
     #
     # 止め損ねても stopped は書く。colab_run.sh はこれを見て自分の後片付け
     # (もう一度 stop して sessions で現物を見る)へ進むので、**黙って待たせるより

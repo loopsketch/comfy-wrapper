@@ -1,8 +1,7 @@
 services:
   # 手元から API を叩く側。生成の投入と回収、測定、仕上げの投入をここで動かす。
   #   docker compose run --rm client src/scripts/smoke_test.py
-  # サーバ本体 (src/server/) は Colab 側で動くので、このイメージには入らない。
-  # 依存は標準ライブラリと ffmpeg だけ。
+  # サーバ本体 (src/server/) は Colab 側で動くのでこのイメージには入らない。
   client:
     build:
       context: .
@@ -22,19 +21,16 @@ services:
   # Colab のランタイム制御 (google-colab-cli)。ホストを汚さないためコンテナに閉じる。
   #
   #   docker compose up -d colab            常駐させる(先にこれ)
-  #   src/scripts/colab.sh sessions         以降の操作はこのラッパ経由
   #   src/scripts/colab.sh new -s comfy --gpu L4
   #
-  # **常駐させる必要がある。** `colab new` は keep-alive デーモンを detached な
-  # 子プロセスとして spawn する(session.py の spawn_keep_alive)。
-  # `docker compose run --rm` で叩くとコマンド終了でコンテナごと消え、
-  # keep-alive も道連れになってランタイムがアイドル刈り取りされる(実際に失った)。
+  # **常駐させること。** colab new は keep-alive デーモンを detached な子プロセスとして
+  # spawn するので、docker compose run --rm で叩くとコマンド終了でコンテナごと消え、
+  # ランタイムがアイドル刈り取りされる。
+  #
+  # 常駐中は entrypoint が OAuth の延長ループを回す。回していないと半日で切れ、
+  # 切れている間はランタイムの確認も停止もできない。
   #
   # トークンと SSH 鍵は .colab/ に残る(git 管理外)。
-  #
-  # 常駐中は entrypoint が **OAuth の延長ループ**を回す(30分おき)。初回の認証だけは
-  # 人が要るが、そのあとの延長は refresh_token で機械的にできる。回していないと
-  # 半日で切れ、切れている間はランタイムの確認も停止もできなくなる。
   colab:
     build:
       context: .
@@ -46,8 +42,7 @@ services:
     user: "1000:1000"
     environment:
       HOME: /app/.colab
-      # 見張りのログを手元と同じ時刻で書く。既定の UTC のままだと 9時間ずれた
-      # ログを読むことになり、止まっているのか進んでいるのか判断を誤る
+      # 見張りのログを手元と同じ時刻で書く(既定の UTC だと読み違える)
       TZ: ${TZ:-Asia/Tokyo}
       COLAB_AUTH_LOOP_MINUTES: ${COLAB_AUTH_LOOP_MINUTES:-30}
     entrypoint: ["/app/src/scripts/colab_entrypoint.sh"]
@@ -57,8 +52,7 @@ services:
 
   # Colab 側の 8000(API) / 8188(ComfyUI) を ssh -L で手元へ通す常駐トンネル。
   #   docker compose up -d tunnel
-  # client からは http://tunnel:8000 で届くので、エンドポイントは固定でよい
-  # (cloudflared の quick tunnel と違って URL が変わらない)。
+  # client からは http://tunnel:8000 で届くので、宛先は固定でよい。
   # ComfyUI は Colab 側で 127.0.0.1 に閉じたまま。外へは出さない。
   tunnel:
     image: comfy-wrapper-colab:latest
@@ -72,9 +66,8 @@ services:
     ports:
       - "8000:8000"
       - "8188:8188"
-    # **docker の restart に張り直しを任せない。** Colab は1ランタイムにつき
-    # colab ssh を1本しか許さず、失敗しても登録が残ることがある。秒単位で叩き直すと
-    # 「Already-active SSH session (HTTP 429)」で自分を締め出して復帰できなくなる
-    # (2026-08-12 に実際に踏んだ)。待ちを入れた張り直しはスクリプト側で行う
+    # **docker の restart に張り直しを任せない。** 1ランタイムにつき colab ssh は1本だけで、
+    # 秒単位で叩き直すと Already-active SSH session (HTTP 429) で締め出される。
+    # 待ちを入れた張り直しは colab_tunnel.sh が行う。
     entrypoint: ["/app/src/scripts/colab_tunnel.sh"]
     restart: unless-stopped

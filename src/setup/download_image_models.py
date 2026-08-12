@@ -67,7 +67,7 @@ MODELS: dict[str, list[Asset]] = {
     # 本命。lightx2v の 4steps 統合版を使うので Lightning LoRA を別に読まなくてよい。
     # **ファイル名に comfyui が入っているものを選ぶこと。** 同じ repo の
     # `qwen_image_2512_int8_4steps_v1.0.safetensors` は ComfyUI の UNETLoader では
-    # 読めず、生成結果が全面ノイズになる(2026-08-07 に実際に踏んだ)。
+    # 読めず、生成結果が全面ノイズになる。
     "qwen-image": [
         (
             "lightx2v/Qwen-Image-2512-Lightning",

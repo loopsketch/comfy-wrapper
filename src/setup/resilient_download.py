@@ -2,7 +2,7 @@
 
 huggingface_hub 1.x の既定の転送経路 **Xet は速いが、無応答のまま固まることがある**。
 21GB のファイルの 84% で停止し、8回とも同じ形になった。py-spy で見ると
-`xet_get()` の中で待ち続けている(2026-08-09)。
+`xet_get()` の中で待ち続けている。
 
     Thread (idle): "MainThread"
         xet_get (huggingface_hub/file_download.py:563)
@@ -73,8 +73,7 @@ def purge(roots, log, why: str, older_than: float | None = None) -> int:
     **殺して取り直すと、書きかけが別名で作られることがある。** Xet と素の HTTP は
     一時ファイル名の付け方が違うため、経路が変わると前の書きかけは再開に使われず
     そのまま残る。21GB 級が数本残るとディスクを食い潰し、次のファイルが
-    `No space left on device` で落ちる(2026-08-09 に実際に踏んだ。書きかけが 49.9GB
-    まで積み上がった)。**再開に使えない書きかけは、その場で捨てる。**
+    `No space left on device` で落ちる。**再開に使えない書きかけは、その場で捨てる。**
 
     older_than を渡すと、それより古いものだけを消す(直前の試行で書いていた分は
     再開に使えるので残す)。

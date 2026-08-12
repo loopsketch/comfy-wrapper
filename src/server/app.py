@@ -165,7 +165,7 @@ LOADER_INPUTS = {
 #
 # **ノードの有無では判定できない。** MiniMaxH3ImageToVideo も WanImageToVideo も
 # ComfyUI 本体に入っているので、ウェイトを1つも落としていないセッションでも
-# ノードは見つかる(実際 wan2.2 だけのセッションで minimax-h3 が ready になった 2026-08-11)。
+# ノードは見つかる。
 # 量子化違いでファイル名が変わるので、前方一致ではなく部分一致で見る。
 READY_ASSETS = {
     "minimax-h3": (
@@ -514,7 +514,7 @@ async def generate(req: GenerateRequest, _: str = Depends(require_key)) -> Gener
             save_node = wan_workflows.SAVE_NODE_ID
         else:
             # 参照シートつき (ltx-2.3-ic) も 2段構えのまま回す。単パスの公式構成は
-            # カートの形は直った代わりにカメラが破綻した(2026-08-12)
+            # カートの形は直った代わりにカメラが破綻した
             sheet = (
                 await comfy.upload(refs[0], f"{job.id}_sheet.png", "image/png")
                 if req.model == "ltx-2.3-ic"
@@ -678,7 +678,7 @@ async def generate_image(
         # 出力の寸法は aspect で決まる。参照の寸法は引き継がない
         workflow = image_workflows.build_edit(
             req.prompt, names, aspect=req.aspect, seed=seed, negative=req.negative,
-            loras=loras, filename_prefix=f"mvc_{job_id}", steps=req.steps,
+            loras=loras, filename_prefix=f"cw_{job_id}", steps=req.steps,
         )
         model = "qwen-image-edit"
     else:
@@ -687,7 +687,7 @@ async def generate_image(
         workflow = image_workflows.build_t2i(
             req.model, req.prompt, aspect=req.aspect, seed=seed,
             negative=req.negative, loras=loras,
-            filename_prefix=f"mvc_{job_id}", steps=req.steps,
+            filename_prefix=f"cw_{job_id}", steps=req.steps,
         )
         model = req.model
 

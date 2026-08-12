@@ -144,10 +144,14 @@ src/scripts/colab_run.sh --setup video --models ltx-2.3-gguf --gpu L4 --max 60 -
 
 ## Claude Code から使う
 
-`.claude/skills/colab-comfy/` にスキルを置いてあります(git 管理下・共有対象)。
-「画像を作って」「この静止画を動かして」のように頼むと、状態の確認 → 確保 → 構築 →
-生成 → 停止 までの手順と、課金を止めるための鉄則をスキルが持っています。
+`.claude/skills/` にスキルを2つ置いてあります(git 管理下・共有対象)。
 `.claude/settings.json` は個人設定なので git 管理外です。
+
+- **`colab-comfy`** — 動かす側。「画像を作って」「この静止画を動かして」と頼むと、
+  状態の確認 → 確保 → 構築 → 生成 → 停止 の手順と、課金を止めるための鉄則を持っています。
+- **`h3-prompt`** — MiniMax H3 に書く側。公式の記法(タスク選択、ショットとカメラの語彙、
+  台詞・歌唱の `<d>`、参照ラベル、音の2フィールド)。H3 はこの形式で学習しているので、
+  外すとカメラ指示やリップシンクが効かなくなります。
 
 ## 自前のコードから呼ぶ
 
@@ -285,18 +289,34 @@ docker compose run --rm client src/scripts/postprocess.py status
 なく拡大モデルが吐く中間サイズ(入力 x 倍率)で決まります。`postprocess.py` は入力と目標の
 比から x2 / x4 を選び、見積もりが 30GB を超えたら投入前に止めます。
 
+## テスト
+
+```bash
+docker compose run --rm client -m unittest discover -s tests -t tests
+```
+
+GPU も Colab のランタイムもネットワークも要りません。**課金が始まってからでないと
+気づけない類の間違い**を、手元で落とすためのものです。
+
+- キャンバス寸法と latent のフレームグリッド(この README の表がそのまま期待値)
+- **ワークフローのグラフ整合性**(全モデル)。`[ノード, 番号]` の参照先が実在するか、
+  保存ノードから辿れないノードが無いか、拡大段のノード ID が本体と衝突しないか。
+  ここが崩れていると ComfyUI は 400 で弾くが、それが分かるのは GPU を確保したあと
+- 宛先・キーの解決、障害の切り分け、リトライの方針(**POST は再送しない** = 二重生成しない)
+- キーストア。保存されるのはハッシュだけで平文は残らないこと、失効が効くこと
+
 ## ディレクトリ構成
 
 ```
 docker-compose.yml     client / colab / tunnel の3サービス
 docker/                各サービスのイメージ
-.claude/skills/        Claude Code 用のスキル(確保・構築・生成・停止の手順)
+.claude/skills/        Claude Code 用のスキル(colab-comfy: 運用 / h3-prompt: H3 の記法)
 src/
   server/              Colab 上で動く FastAPI + ComfyUI 橋渡し
   setup/               ウェイトの取得
   scripts/             手元と Colab 側の運用スクリプト
   lib/                 手元側の共有層(宛先・キー・リトライ・単価)
-  notebooks/           旧経路(凍結)
+tests/                 単体テスト(標準の unittest。GPU もネットワークも不要)
 works/                 生成物・測定結果・見張りの回収先(git 管理外)
 ```
 

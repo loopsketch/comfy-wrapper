@@ -10,8 +10,7 @@
 #     src/scripts/measure_video.py submit works/still.png --model ltx-2.3-gguf
 #
 # **承認はこのコマンドを打つ時点で済んでいる。実行中に承認点を作らない。**
-# 途中に人待ちがあると、待っている間ずっと GPU が課金される。実際に、構築後の
-# 起動待ちで人を待つ作りだったために 43分(45円)を空転させた(2026-08-08)。
+# 途中に人待ちがあると、待っている間ずっと GPU が課金される。
 #
 # 何が起きても最後に必ず stop する(trap)。GPU は枚数ではなく稼働時間で課金される。
 #
@@ -69,14 +68,14 @@ esac
 LOG=.colab/keepalive-watch.log
 # 見張りが書く機械可読の状態(building / ready / stopped)。
 # **ログの日本語を grep しない。** 起動行の「アイドル 8分で自動停止」を停止と
-# 読み違えて、構築開始15秒で自分を止めた(2026-08-09)
+# 読み違えて、構築開始15秒で自分を止めた
 STATE=.colab/watch-state.json
 
 say() { printf '\n=== %s\n' "$1"; }
 
 # 止める前にリモートのログを吐かせる。**回収は見張りの自動停止時にしか走らない**ので、
 # colab_run.sh が自力で終わるとログごと消える。API が上がらなかった回の原因を
-# 追えなかった(2026-08-09)。落ちた理由は、落ちたセッションの中にしか無い
+# 追えなかった。落ちた理由は、落ちたセッションの中にしか無い
 dump_remote_logs() {
   src/scripts/colab.sh exec -s "$SESSION" 2>/dev/null <<'PY' || true
 from pathlib import Path
@@ -211,7 +210,7 @@ say "トンネルを張ります"
 docker compose up -d tunnel >/dev/null
 # API(uvicorn) は ComfyUI より少し遅れて上がる。疎通するまで待つ。
 # 動画モデルは ComfyUI がウェイトを見つけ終えるまで ready が立たない。取得直後の初回は
-# 10分では足りずに空振りした(2026-08-10)。待ちを伸ばし、経過も出す
+# 10分では足りずに空振りした。待ちを伸ばし、経過も出す
 WAIT_MODEL=""
 NEED=comfy_ready
 TRIES=60
@@ -228,8 +227,7 @@ if [ "$KIND" = video ]; then
 fi
 
 # 疎通の判定は colab_link の health() をそのまま使う。**ここで別実装しない。**
-# 以前はインラインの python で同じことを書いていて、colab_link の health() は
-# 誰も呼んでいなかった。落ちている理由も colab_link.diagnose() が名指しする
+# 落ちている理由は colab_link.diagnose() が名指しする
 health_probe() {
   CW_WAIT_MODEL="$WAIT_MODEL" docker compose run --rm -e CW_WAIT_MODEL client -c "
 import os, sys
@@ -262,7 +260,7 @@ for i in $(seq 1 $TRIES); do
   sleep 10
 done
 # **黙って先へ進まない。** 60回失敗しても素通りする作りだったため、API が
-# 上がっていないまま生成を投げて ConnectionReset で落ちた(2026-08-09)。
+# 上がっていないまま生成を投げて ConnectionReset で落ちた。
 # 見張りは ComfyUI(8188)しか見ないので、API(8000)の不在はここでしか気づけない
 if [ "$api_up" != 1 ]; then
   say "API ($NEED) が10分たっても応答しません。トンネルの転送先が落ちています"

@@ -50,7 +50,7 @@ def build(
     upscale_model: str | None = None,
     interp_model: str | None = None,
     keep_audio: bool = True,
-    filename_prefix: str = "video/mvc_post",
+    filename_prefix: str = "video/cw_post",
 ) -> dict:
     """後処理のワークフローを返す。
 

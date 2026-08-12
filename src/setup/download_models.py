@@ -135,7 +135,7 @@ def main() -> int:
 
     # **落とす前に、落とせるかを見る。** 途中でディスクが尽きると、そこまでの
     # 取得時間(= GPU の課金)がまるごと無駄になる。実際、21GB を取り終えたあとに
-    # 次の 15.7GB が `No space left on device` で落ちた(2026-08-09)。
+    # 次の 15.7GB が `No space left on device` で落ちた。
     todo = [(p, s) for p, s in plan if not (args.comfy / "models" / p).exists()]
     need = sum(s for _, s in todo)
     free = shutil.disk_usage(args.comfy).free / 1024 ** 3

@@ -150,10 +150,16 @@ src/scripts/colab_run.sh --setup video --models ltx-2.3-gguf --gpu L4 --max 60 -
 
 ## Using it from Claude Code
 
-`.claude/skills/colab-comfy/` holds a Claude Code skill (tracked in git and meant to be
-shared). Ask for an image or a clip and the skill supplies the whole procedure — check
-state, allocate, build, generate, stop — along with the rules that keep the meter from
-running. `.claude/settings.json` is personal and stays out of git.
+Two Claude Code skills live in `.claude/skills/` (tracked in git and meant to be shared);
+`.claude/settings.json` is personal and stays out of git.
+
+- **`colab-comfy`** — running the thing. Ask for an image or a clip and it supplies the
+  whole procedure: check state, allocate, build, generate, stop, plus the rules that keep
+  the meter from running.
+- **`h3-prompt`** — writing for MiniMax H3. The official prompt notation: task selection,
+  shot and camera vocabulary, the `<d>` form for dialogue and singing, reference labels,
+  and the two audio fields. H3 is trained on this format, and camera or lip-sync
+  instructions stop working when you drift from it.
 
 ## Usage
 
@@ -293,18 +299,36 @@ generate at an fps that divides your target cleanly. Peak cost is system RAM, dr
 the upscaler's intermediate size (input x factor), not the target size; `postprocess.py`
 picks x2 or x4 and refuses to submit above a 30GB estimate.
 
+## Tests
+
+```bash
+docker compose run --rm client -m unittest discover -s tests -t tests
+```
+
+No GPU, no Colab runtime, no network — the suite covers the logic you can get wrong
+without noticing until a runtime is already billing:
+
+- canvas sizes and latent frame grids (the tables in this README are the fixtures)
+- **workflow graph integrity** for every model: each `[node, index]` reference resolves,
+  no node is unreachable from the save node, and the upscale stage refuses to collide
+  with existing node IDs — ComfyUI would otherwise reject these with a 400 only after
+  you have paid for a GPU
+- endpoint/key resolution, failure diagnosis, and the retry policy (a POST is never
+  retried, so a generation is never submitted twice)
+- the key store: hashes are persisted, plaintext never is, and revocation holds
+
 ## Repository layout
 
 ```
 docker-compose.yml     client / colab / tunnel
 docker/                images for each service
-.claude/skills/        Claude Code skill for driving this repo (allocate, build, generate, stop)
+.claude/skills/        Claude Code skills (colab-comfy: run it / h3-prompt: write for H3)
 src/
   server/              FastAPI + ComfyUI bridge; runs on the Colab runtime
   setup/               weight downloads
   scripts/             operational scripts, local and runtime side
   lib/                 local shared layer (endpoint, key, retry, pricing)
-  notebooks/           legacy path (frozen)
+tests/                 unit tests (stdlib unittest, no GPU or network)
 works/                 outputs, measurements, rescued artifacts (git-ignored)
 ```
 

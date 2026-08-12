@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Colab 上のディレクトリを固めて手元へ回収する。
 #
-#   src/scripts/colab_pull.sh /content/bench works/.image-bench [セッション名]
+#   src/scripts/colab_pull.sh /content/jobs works/.jobs [セッション名]
 #
 # 生成物は works/ 以下に置く。リポジトリには入らない。
 set -euo pipefail
