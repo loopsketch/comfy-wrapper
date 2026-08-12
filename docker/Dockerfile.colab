@@ -1,0 +1,26 @@
+FROM python:3.12-slim
+
+# openssh-client は `colab ssh` の ProxyCommand 経路で使う。git は下記の fork 取得に要る
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client ca-certificates git procps curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# PyPI の最新は 0.6.0 で、そこには `colab ssh` がまだ入っていない。
+# ssh のポートフォワード(-L)で ComfyUI と API を手元へ通す構成にしているので、
+# main を commit で固定して入れる。リリースに入ったらタグへ戻す。
+ARG COLAB_CLI_REF=10055930772e24b5d3afeb12c2a767db75a0676b
+
+# jupyter-kernel-client は PyPI に同名の別パッケージがあり、そちらが入ると
+# `colab exec` が AttributeError で落ちる。CLI の uv.lock は googlecolab の
+# fork を git から入れているので、こちらもそれに合わせる。
+RUN uv pip install --system \
+      "google-colab-cli @ git+https://github.com/googlecolab/google-colab-cli.git@${COLAB_CLI_REF}" \
+    && uv pip install --system --force-reinstall --no-deps \
+       "jupyter-kernel-client @ git+https://github.com/googlecolab/jupyter-kernel-client.git"
+
+# ssh-keygen / ssh は uid が /etc/passwd に無いと動かない
+RUN useradd -u 1000 -m -s /bin/bash colab
+
+WORKDIR /app

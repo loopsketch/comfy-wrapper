@@ -1,0 +1,5 @@
+.git/
+.colab/
+works/
+**/__pycache__/
+*.pyc

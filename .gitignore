@@ -1,0 +1,15 @@
+# 秘匿情報。OAuth トークン・SSH 鍵・キーストア・HF トークンが入る
+.colab/
+.env
+
+# 手元の作業ディレクトリ(生成物・測定結果・見張りが回収したもの)。
+# ディレクトリ自体は残す(見張りの回収先になる)
+works/*
+!works/.gitkeep
+
+# Claude Code の個人設定。スキル (.claude/skills/) は共有するので追跡する
+.claude/settings.json
+.claude/settings.local.json
+
+__pycache__/
+*.pyc
