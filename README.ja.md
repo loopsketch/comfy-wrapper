@@ -395,7 +395,10 @@ SHA-256 のハッシュだけなので、平文のキーはリモートに存在
 
 MIT — [LICENSE](LICENSE) を参照してください。Copyright (c) 2026 LOOPSKETCH.
 
-これが及ぶのはこのリポジトリのコードだけです。ウェイトにはそれぞれの規約があり、
+これが及ぶのはこのリポジトリのコードだけです。`src/server/` のワークフロー生成は
+ComfyUI 公式テンプレート(MIT / Copyright (c) 2023-present Comfy Org)を展開したもので、
+表示は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にあります。
+ウェイトにはそれぞれの規約があり、
 MiniMax H3 は MiniMax H3 Community License(USA/EU/UK/韓国向けには別途申請フォーム)、
 Wan2.2 は Apache-2.0、LTX-2.3 は LTX-2 Community License Agreement です。商用利用の前に
 確認してください。

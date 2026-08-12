@@ -413,7 +413,10 @@ liability whatsoever.
 
 MIT — see [LICENSE](LICENSE). Copyright (c) 2026 LOOPSKETCH.
 
-This covers the code in this repository only. Model weights carry their own terms:
+This covers the code in this repository only. The workflow builders under `src/server/`
+are derived from the official ComfyUI workflow templates (MIT, Copyright (c) 2023-present
+Comfy Org) — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Model weights carry
+their own terms:
 MiniMax H3 Community License (with a separate application form for USA/EU/UK/Korea),
 Apache-2.0 for Wan2.2, and the LTX-2 Community License Agreement for LTX-2.3. Review them
 before any commercial use.
