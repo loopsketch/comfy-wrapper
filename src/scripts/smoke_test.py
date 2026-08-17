@@ -51,6 +51,7 @@ def main() -> int:
     parser.add_argument("--endpoint", default=colab_link.read_endpoint())
     parser.add_argument("--key", default=colab_link.read_api_key())
     parser.add_argument("--out", default="smoke.mp4", type=Path)
+    parser.add_argument("--model", help="省略時はサーバの既定 (minimax-h3)")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--aspect", default="16x9")
@@ -70,6 +71,8 @@ def main() -> int:
         "aspect": args.aspect,
         "megapixels": args.megapixels,
     }
+    if args.model:
+        body["model"] = args.model
     if args.first_frame:
         body["first_frame"] = base64.b64encode(args.first_frame.read_bytes()).decode()
     if args.output_size:
