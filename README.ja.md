@@ -17,10 +17,10 @@ GET  /v1/jobs/{id}/video -> mp4
 ## 特徴
 
 - **複数モデルを同じ API で扱える。** 動画は MiniMax H3 / Wan2.2 (14B MoE・TI2V-5B・S2V) /
-  LTX-2.3 (fp8・GGUF・IC-LoRA)、静止画は Z-Image と Qwen-Image / Qwen-Image-Edit。
+  LTX-2.3 (fp8・GGUF・IC-LoRA) / LTX-2.5、静止画は Z-Image と Qwen-Image / Qwen-Image-Edit。
   モデルの切り替えはリクエストのフィールド1つです。
 - **音声つきの生成。** MiniMax H3 は映像とステレオ音声を1パスで同時に生成し、画像・動画・音声を
-  参照として受け取れます。LTX-2.3 も音声つきで出力し、Wan2.2-S2V は入力音声で駆動します。
+  参照として受け取れます。LTX-2.3 / LTX-2.5 も音声つきで出力し、Wan2.2-S2V は入力音声で駆動します。
 - **ComfyUI は外に出さない。** ComfyUI には認証機構が無いため、ランタイム上では `127.0.0.1` に
   閉じたままにします。外から届くのは SSH トンネル越しの FastAPI だけで、Bearer キーが要ります。
 - **平文のキーは手元から出ない。** `colab_key.sh` が手元でキーを発行し、ランタイムへ送るのは
@@ -205,12 +205,18 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
 | `ltx-2.3` (22B fp8) | 約42GB | あり | 8〜50(既定25) | 1280x704 / 1920x1088 | t2v / i2v |
 | `ltx-2.3-gguf` (Q4_K_M) | 約28GB | あり | 8〜50(既定25) | 同上 | t2v / i2v |
 | `ltx-2.3-ic` (+IC-LoRA) | 約29GB | あり | 同上 | 同上 | i2v + **参照シート** |
+| `ltx-2.5` (22B int8) | 約40GB | あり | 8〜50(既定24) | 同上 | t2v / i2v / **先頭・末尾** |
 
 - **参照つき生成 (r2v) は `minimax-h3` だけ。** プロンプト側から `<Picture 1>` `<Video 1>`
   `<Audio 1>` で参照を指します。
 - **L4 では `ltx-2.3-gguf` が一番速い。** MiniMax H3 の 5.6倍、Wan2.2 の 2.3倍で、しかも
   音声つき 25fps です。i2v をまとめて回すならこれが既定候補になります。
 - **`ltx-2.3` の fp8 は L4 に載りません**(本体 29GB)。L4 では GGUF 版、fp8 は A100 向けです。
+- **`ltx-2.5` は int8 のまま L4 に載ります**(本体 21.5GB)。480p も 720p も部分オフロード
+  なしで回り、音声つき 24fps です。**最初と最後のフレームを置ける LTX はこれだけ**で、
+  そのときだけ単パス・フル解像度になります(2段構えより時間はかかります)。
+- **参照シート (IC-LoRA Ingredients) の 2.5 版はまだありません。** 参照シートを使うなら
+  `ltx-2.3-ic` のままにしてください。
 - `duration` はモデルごとの latent フレームグリッドに切り上げられます。実際の尺は
   レスポンスの `seconds` に入ります。
 
@@ -221,6 +227,19 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
 | `minimax-h3` (fp8, 20step) | 471秒 | 400秒 | 77.4秒 | 2.02円 |
 | `wan2.2` (4step 蒸留) | 213秒 | 165秒 | 32.6秒 | 0.83円 |
 | `ltx-2.3-gguf` (Q4_K_M) | **127秒** | **72秒** | **14.0秒** | **0.36円** |
+| `ltx-2.5` (22B int8) | 約201秒 (合算) | 105秒 | 20.8秒 | 0.53円 |
+
+`ltx-2.5` の1本目だけは合算値です。ロードにかかる 96秒は 2秒の回で測ったもので、
+5秒の cold は測っていません。同じセッションで測った他の条件は次のとおりです。
+
+| 条件 | 時間 |
+|---|---|
+| 480p (512x832) / 2秒 / i2v | 148秒(ロード込み)、52秒(ロード済み) |
+| 720p (704x1280) / 2秒 / i2v | 96秒 |
+| 480p (512x832) / 2秒 / 先頭+末尾 | 134秒(単パス・フル解像度のため i2v より重い) |
+
+生成中の VRAM は 21.4/23.0GB 使用で、`loaded partially` は一度も出ていません。
+**L4 で 720p まで素で回ります。**
 
 いずれも L4・ウェイト取得済みでの値です。手元の環境で測るなら
 `scripts/measure_video.py` を使ってください(ロード込みとロード済みを分けて出します)。
@@ -250,7 +269,7 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
 | `task` | `i2v` | `t2v` / `i2v` / `r2v`(`r2v` は H3 のみ) |
 | `prompt` | — | 参照は `<Picture i>` `<Video k>` `<Audio j>` で指す |
 | `negative` | モデルの既定 | Wan / LTX 用。H3 は使わない |
-| `first_frame` / `last_frame` | — | base64 か data URI。`i2v` は `first_frame` 必須。`last_frame` は H3 と `wan2.2` のみ |
+| `first_frame` / `last_frame` | — | base64 か data URI。`i2v` は `first_frame` 必須。`last_frame` は H3・`wan2.2`・`ltx-2.5` のみ(いずれも `first_frame` と一緒に) |
 | `ref_images` / `ref_videos` / `ref_audios` | `[]` | `r2v` 用。最大 9 / 3 / 3 |
 | `audio` | — | `wan2.2-s2v` の駆動音声 |
 | `duration` | 5.0 | 秒。モデルのフレームグリッドに切り上げ |
@@ -325,7 +344,7 @@ works/                 生成物・測定結果・見張りの回収先(git 管�
 | パス | 役割 |
 |---|---|
 | `server/app.py` | FastAPI 本体。認証・ジョブ管理・ComfyUI への橋渡し |
-| `server/{h3,wan,ltx,image,post}_workflows.py` | 各モデルのワークフロー生成(ComfyUI API フォーマット) |
+| `server/{h3,wan,ltx,ltx25,image,post}_workflows.py` | 各モデルのワークフロー生成(ComfyUI API フォーマット) |
 | `server/video_common.py` | 共通の寸法・尺の計算と出力段の拡大 |
 | `server/comfy.py` | ComfyUI クライアント(投入・ポーリング・出力回収) |
 | `server/auth.py` | キーの発行・保存・検証(平文は保存しない) |
@@ -352,7 +371,7 @@ works/                 生成物・測定結果・見張りの回収先(git 管�
 | `TZ` | `Asia/Tokyo` | colab。見張りのログの時刻 |
 | `COMFY_URL` | `http://127.0.0.1:8188` | server |
 | `WRAPPER_KEYS_PATH` | ランタイム上のパス | server。キーストアの置き場 |
-| `H3_*` / `LTX_*` / `CW_*` | モデルごと | server。ウェイトのファイル名の上書き |
+| `H3_*` / `LTX_*` / `LTX25_*` / `CW_*` | モデルごと | server。ウェイトのファイル名の上書き |
 
 ## Colab 以外で動かす
 
@@ -400,14 +419,21 @@ ComfyUI 公式テンプレート(MIT / Copyright (c) 2023-present Comfy Org)を�
 表示は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にあります。
 ウェイトにはそれぞれの規約があり、
 MiniMax H3 は MiniMax H3 Community License(USA/EU/UK/韓国向けには別途申請フォーム)、
-Wan2.2 は Apache-2.0、LTX-2.3 は LTX-2 Community License Agreement です。商用利用の前に
+Wan2.2 は Apache-2.0、LTX-2.3 / LTX-2.5 は LTX-2 Community License Agreement です。商用利用の前に
 確認してください。
+
+**LTX 系の HF リポジトリは gated です。** ウェイトを取得する前に、HF トークンのアカウントで
+ライセンスへの同意(モデルページの "Agree and Access")を済ませてください。未同意だと
+取得が 403 になり、**構築は止まらないまま**ウェイトの無いセッションが立ち上がります。
+2.3 と 2.5 は別リポジトリなので、同意も別に必要です。
 
 ## 謝辞
 
 - [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) と
   [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)(量子化ウェイト)
-- [Wan-AI](https://huggingface.co/Wan-AI) / [Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)
+- [Wan-AI](https://huggingface.co/Wan-AI) /
+  [Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3) /
+  [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5)
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) と
   [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
 - [google-colab-cli](https://github.com/googlecolab/google-colab-cli)

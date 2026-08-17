@@ -11,9 +11,10 @@ JobStatus = Literal["queued", "running", "succeeded", "failed", "canceled"]
 
 # 動画モデル。r2v(参照つき)は minimax-h3 だけ、音声つき生成は h3 と LTX 系。
 # ltx-2.3-gguf は Q4_K_M 量子化版(L4 の VRAM に載るのはこちら)。
+# ltx-2.5 は int8 量子化の公式ウェイトで、first_frame と last_frame の両方を取れる。
 VideoModel = Literal[
     "minimax-h3", "wan2.2", "wan2.2-5b", "wan2.2-s2v",
-    "ltx-2.3", "ltx-2.3-gguf", "ltx-2.3-ic",
+    "ltx-2.3", "ltx-2.3-gguf", "ltx-2.3-ic", "ltx-2.5",
 ]
 
 

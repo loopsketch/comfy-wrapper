@@ -20,7 +20,7 @@
 #   --idle MIN   何も進んでいないと見なすまでの分(既定 8)
 #   --setup KIND image(静止画) | h3(MiniMax H3) | video(Wan2.2 / LTX-2.3)。既定 image
 #   --models "…" 取得するモデル。既定は setup 側の既定
-#                video なら wan2.2 | wan2.2-t2v | wan2.2-5b | ltx-2.3 | ltx-2.3-gguf
+#                video なら wan2.2 | wan2.2-t2v | wan2.2-5b | ltx-2.3 | ltx-2.3-gguf | ltx-2.5
 #                h3 なら fl2va(t2v/i2v) | ref2va(参照つき) | "fl2va ref2va"
 #   --quant Q    H3 の量子化(h3 のときだけ)。int8 | fp8 | bf16
 #   --keep       終わってもセッションを止めない(続けて手で叩きたいとき)

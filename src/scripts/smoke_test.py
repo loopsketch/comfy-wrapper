@@ -51,11 +51,17 @@ def main() -> int:
     parser.add_argument("--endpoint", default=colab_link.read_endpoint())
     parser.add_argument("--key", default=colab_link.read_api_key())
     parser.add_argument("--out", default="smoke.mp4", type=Path)
+    parser.add_argument("--model", help="省略時はサーバの既定 (minimax-h3)")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--aspect", default="16x9")
     parser.add_argument("--megapixels", type=float, default=0.4)
     parser.add_argument("--first-frame", type=Path, help="指定すると i2v で生成する")
+    parser.add_argument(
+        "--last-frame",
+        type=Path,
+        help="末尾フレーム。--first-frame と一緒に渡す (ltx-2.5 / wan2.2 / H3)",
+    )
     parser.add_argument("--output-size", help="出力サイズ。例 1920x1080")
     parser.add_argument("--upscale-model", help="upscale_models/ のファイル名")
     args = parser.parse_args()
@@ -70,8 +76,12 @@ def main() -> int:
         "aspect": args.aspect,
         "megapixels": args.megapixels,
     }
+    if args.model:
+        body["model"] = args.model
     if args.first_frame:
         body["first_frame"] = base64.b64encode(args.first_frame.read_bytes()).decode()
+    if args.last_frame:
+        body["last_frame"] = base64.b64encode(args.last_frame.read_bytes()).decode()
     if args.output_size:
         width, height = (int(v) for v in args.output_size.lower().split("x"))
         body["output_width"], body["output_height"] = width, height

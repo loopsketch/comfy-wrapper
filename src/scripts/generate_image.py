@@ -125,17 +125,19 @@ def cmd_submit(args) -> int:
         print("回収は status で。**ランタイムを止める前に回収すること**")
         return 0
 
-    deadline = time.time() + args.timeout
+    started = time.time()
+    deadline = started + args.timeout
     while time.time() < deadline:
         time.sleep(args.interval)
         state = json.loads(_req("GET", f"/v1/jobs/{job['job_id']}"))
         if state["status"] not in TERMINAL:
             continue
+        elapsed = time.time() - started
         if state["status"] != "succeeded":
-            print(f"失敗: {state['status']} / {state.get('error')}")
+            print(f"失敗: {state['status']} / {state.get('error')}{_hint(state.get('error'))}")
             return 1
         path = _collect(job["job_id"], out)
-        print(f"書き出した: {path} ({path.stat().st_size / 1024:.0f}KB)")
+        print(f"書き出した: {path} ({path.stat().st_size / 1024:.0f}KB, {elapsed:.0f}秒)")
         return 0
 
     # **待ちを打ち切っても生成は裏で走っている。** 台帳に残して status で拾えるようにする

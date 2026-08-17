@@ -1,9 +1,9 @@
-"""Wan2.2 / LTX-2.3 用の環境構築を非同期で走らせる。
+"""Wan2.2 / LTX 用の環境構築を非同期で走らせる。
 
     src/scripts/colab.sh exec -s comfy -f src/scripts/colab_video_setup.py
 
 H3 は落とさない。**1セッションに1モデル**で、Wan2.2 14B 一式で約 38GB、
-LTX-2.3 で約 42GB ある。どれを落とすかは colab_run.sh --models で渡す
+LTX-2.3 で約 42GB、LTX-2.5 で約 40GB ある。どれを落とすかは colab_run.sh --models で渡す
 (/content/setup-models.txt 経由)。
 
 進捗は /content/logs/setup.log。完了で /content/logs/setup.done ができる。
@@ -26,7 +26,8 @@ LOGS = Path("/content/logs")
 TARBALL = Path("/content/comfy-wrapper.tar.gz")
 KEYS = Path("/content/comfy-keys.json")  # colab_key.sh が送るハッシュだけのキーストア
 
-# wan2.2 (i2v 14B) / wan2.2-t2v / wan2.2-5b / ltx-2.3 / ltx-2.3-gguf。空白区切りで複数可
+# wan2.2 (i2v 14B) / wan2.2-t2v / wan2.2-5b / ltx-2.3 / ltx-2.3-gguf / ltx-2.5。
+# 空白区切りで複数可
 MODELS = "wan2.2"
 
 _override = Path("/content/setup-models.txt")
