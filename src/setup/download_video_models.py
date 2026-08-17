@@ -8,8 +8,12 @@ MiniMax H3 は download_models.py のまま(リポジトリ構成が ComfyUI の
 同じで、量子化の選択肢も別軸のため)。こちらは repo ごとにパスがばらばらなので、
 download_image_models.py と同じ (repo, repo内パス, 配置先, GB) の表で持つ。
 
-**1セッションに1モデル。** Wan2.2 14B 一式で約 38GB、LTX-2.3 で約 42GB あり、
-/content にも VRAM にも同時には載らない。切り替えるときは構築からやり直す。
+**1セッションに1モデル。** Wan2.2 14B 一式で約 38GB、LTX-2.3 で約 42GB、
+LTX-2.5 で約 40GB あり、/content にも VRAM にも同時には載らない。
+切り替えるときは構築からやり直す。
+
+Lightricks の LTX 系リポジトリは gated なので、HF トークン側でライセンスに
+同意しておくこと(未同意だと 401 で落ちる)。
 """
 
 from __future__ import annotations
@@ -157,6 +161,46 @@ MODELS: dict[str, list[Asset]] = {
             1.31,
         ),
     ],
+    # LTX-2.5。int8 量子化の公式ウェイト。2.3 と違ってチェックポイント1本ではなく、
+    # 本体・テキストエンコーダ・映像 VAE・音声 VAE に分かれている。
+    #
+    # **音声 VAE も vae/ に置く。** 2.3 では専用ローダが checkpoints/ から読んでいたが、
+    # 2.5 は素の VAELoader で通るようになった。
+    #
+    # bf16 は本体だけで 42GB あって 1セッションに収まらない。nvfp4 (18.7GB) は
+    # Blackwell 専用で L4 (Ada) では動かないので、選べるのは int8 だけ。
+    "ltx-2.5": [
+        (
+            "Lightricks/LTX-2.5",
+            "diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+            "diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+            21.50,
+        ),
+        (
+            "Lightricks/LTX-2.5",
+            "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+            "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+            15.37,
+        ),
+        (
+            "Lightricks/LTX-2.5",
+            "vae/ltx-2.5-video-vae-bf16.safetensors",
+            "vae/ltx-2.5-video-vae-bf16.safetensors",
+            1.47,
+        ),
+        (
+            "Lightricks/LTX-2.5",
+            "vae/ltx-2.5-audio-vae-bf16.safetensors",
+            "vae/ltx-2.5-audio-vae-bf16.safetensors",
+            0.36,
+        ),
+        (
+            "Lightricks/LTX-2.5",
+            "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+            "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+            1.00,
+        ),
+    ],
 }
 
 # 仕上げ(フレーム補間 + アップスケール)。**合計 160MB なので毎回入れる。**
@@ -282,7 +326,7 @@ def main() -> int:
             f"ディスクが足りません。{need_gb:.1f} GB 要るのに使えるのは "
             f"{max(free_gb - DISK_MARGIN_GB, 0):.1f} GB です。\n"
             "1セッションに1モデルにしてください "
-            "(wan2.2 約38GB / ltx-2.3 約42GB / H3 42.5GB は同居できません)。"
+            "(wan2.2 約38GB / ltx-2.3 約42GB / ltx-2.5 約40GB / H3 42.5GB は同居できません)。"
         )
         return 1
 

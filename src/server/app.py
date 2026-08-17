@@ -29,6 +29,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from PIL import Image
 
 import h3_workflows
+import ltx25_workflows
 import ltx_workflows
 import post_workflows
 import wan_workflows
@@ -185,6 +186,8 @@ READY_ASSETS = {
     "ltx-2.3-gguf": ("UnetLoaderGGUF", "unet_name", ["ltx-2.3-22b"]),
     # 参照シートつき。IC-LoRA が載っていれば使える(本体は GGUF と共用)
     "ltx-2.3-ic": ("LoraLoaderModelOnly", "lora_name", ["ic-lora-ingredients"]),
+    # 2.5 は diffusion_models/ に置く。2.3 fp8 (checkpoints/) とは棚が違う
+    "ltx-2.5": ("UNETLoader", "unet_name", ["ltx-2.5-22b"]),
     # 仕上げ(補間 + 拡大)。生成モデルとは独立に載る
     "postprocess": (
         "FrameInterpolationModelLoader",
@@ -360,9 +363,10 @@ def _plan(req: GenerateRequest, aspect: str) -> tuple[int, int, int, int]:
         width, height = wan_workflows.canvas(req.model, aspect, req.megapixels)
         return width, height, wan_workflows.frame_length(req.model, req.duration), \
             wan_workflows.fps(req.model)
-    fps = req.fps or ltx_workflows.DEFAULT_FPS
-    width, height = ltx_workflows.canvas(aspect, req.megapixels)
-    return width, height, ltx_workflows.frame_length(req.duration, fps), fps
+    ltx = ltx25_workflows if req.model == "ltx-2.5" else ltx_workflows
+    fps = req.fps or ltx.DEFAULT_FPS
+    width, height = ltx.canvas(aspect, req.megapixels)
+    return width, height, ltx.frame_length(req.duration, fps), fps
 
 
 def _check_task(req: GenerateRequest) -> None:
@@ -392,10 +396,14 @@ def _check_task(req: GenerateRequest) -> None:
             f"{req.model} は audio を取りません "
             "(H3 の参照音声は ref_audios、H3 と LTX は音声を自分で生成します)",
         )
-    if req.last_frame and (req.model == "wan2.2-5b" or req.model.startswith("ltx-")):
+    # LTX で最初と最後の両方を置けるのは 2.5 だけ(公式の flf2v テンプレートがある)。
+    # 2.5 でも始点なしの last_frame は取らない
+    if req.last_frame and (req.model == "wan2.2-5b" or req.model.startswith("ltx-2.3")):
         raise HTTPException(400, f"{req.model} は last_frame に未対応です")
+    if req.last_frame and req.model == "ltx-2.5" and not req.first_frame:
+        raise HTTPException(400, "ltx-2.5 の last_frame は first_frame と一緒に渡してください")
     if req.fps and not req.model.startswith("ltx-"):
-        raise HTTPException(400, "fps を指定できるのは ltx-2.3 系だけです")
+        raise HTTPException(400, "fps を指定できるのは LTX 系だけです")
 
 
 @app.post("/v1/generate", response_model=GenerateResponse, status_code=202)
@@ -512,6 +520,21 @@ async def generate(req: GenerateRequest, _: str = Depends(require_key)) -> Gener
             )
             upscale = wan_workflows.attach_upscale
             save_node = wan_workflows.SAVE_NODE_ID
+        elif req.model == "ltx-2.5":
+            workflow = ltx25_workflows.build(
+                prompt=req.prompt,
+                width=width,
+                height=height,
+                length=length,
+                seed=seed,
+                fps=fps,
+                negative=req.negative,
+                first_frame=first_name,
+                last_frame=last_name,
+                filename_prefix=f"video/{job.id}",
+            )
+            upscale = ltx25_workflows.attach_upscale
+            save_node = ltx25_workflows.SAVE_NODE_ID
         else:
             # 参照シートつき (ltx-2.3-ic) も 2段構えのまま回す。単パスの公式構成は
             # カートの形は直った代わりにカメラが破綻した

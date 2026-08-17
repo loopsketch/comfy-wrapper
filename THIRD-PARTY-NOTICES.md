@@ -3,7 +3,8 @@
 ## Comfy-Org/workflow_templates
 
 `src/server/h3_workflows.py` / `wan_workflows.py` / `ltx_workflows.py` /
-`image_workflows.py` / `post_workflows.py` build ComfyUI API-format workflows whose node
+`ltx25_workflows.py` / `image_workflows.py` / `post_workflows.py` build ComfyUI
+API-format workflows whose node
 graphs, input names, and defaults are derived from the official ComfyUI workflow
 templates and blueprints.
 

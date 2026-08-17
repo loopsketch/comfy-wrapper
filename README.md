@@ -18,10 +18,10 @@ GET  /v1/jobs/{id}/video -> mp4
 ## Features
 
 - **One API for several models.** MiniMax H3, Wan2.2 (14B MoE / TI2V-5B / S2V),
-  LTX-2.3 (fp8 / GGUF / IC-LoRA) for video; Z-Image and Qwen-Image / Qwen-Image-Edit
+  LTX-2.3 (fp8 / GGUF / IC-LoRA) and LTX-2.5 for video; Z-Image and Qwen-Image / Qwen-Image-Edit
   for stills. Switching models is a field in the request body.
 - **Audio-capable generation.** MiniMax H3 generates video and stereo audio in a single
-  pass and accepts image / video / audio references; LTX-2.3 also outputs audio;
+  pass and accepts image / video / audio references; LTX-2.3 and LTX-2.5 also output audio;
   Wan2.2-S2V is driven by an input audio track.
 - **ComfyUI is never exposed.** ComfyUI has no authentication, so it stays bound to
   `127.0.0.1` on the runtime. Only the FastAPI service is reachable, and only through
@@ -214,6 +214,7 @@ at the same time.
 | `ltx-2.3` (22B fp8) | ~42GB | yes | 8-50 (default 25) | 1280x704, 1920x1088 | t2v / i2v |
 | `ltx-2.3-gguf` (Q4_K_M) | ~28GB | yes | 8-50 (default 25) | same | t2v / i2v |
 | `ltx-2.3-ic` (+IC-LoRA) | ~29GB | yes | same | same | i2v + **reference sheet** |
+| `ltx-2.5` (22B int8) | ~40GB | yes | 8-50 (default 24) | same | t2v / i2v / **first+last frame** |
 
 - **Reference-conditioned generation (`r2v`) is MiniMax H3 only.** References are
   addressed from the prompt as `<Picture 1>`, `<Video 1>`, `<Audio 1>`.
@@ -221,6 +222,12 @@ at the same time.
   at 25fps. It is the default choice for batches of i2v shots.
 - **`ltx-2.3` fp8 does not fit on an L4** (29GB checkpoint) — use the GGUF build there
   and keep fp8 for an A100.
+- **`ltx-2.5` does fit on an L4** in int8 (21.5GB transformer). Both 480p and 720p run
+  without partial offload, with audio at 24fps. It is **the only LTX build that takes a
+  last frame**, and that path is a single full-resolution pass (slower than the two-pass
+  one).
+- **There is no 2.5 build of the IC-LoRA reference sheet yet** — stay on `ltx-2.3-ic` if
+  you need reference sheets.
 - `duration` is rounded up to each model's latent frame grid; the response reports the
   actual length in `seconds`.
 
@@ -231,6 +238,19 @@ Measured on an L4, 480p, ~5s, 9:16, identical seed and prompt:
 | `minimax-h3` (fp8, 20 steps) | 471s | 400s | 77.4s | JPY 2.02 |
 | `wan2.2` (4-step distill) | 213s | 165s | 32.6s | JPY 0.83 |
 | `ltx-2.3-gguf` (Q4_K_M) | **127s** | **72s** | **14.0s** | **JPY 0.36** |
+| `ltx-2.5` (22B int8) | ~201s (sum) | 105s | 20.8s | JPY 0.53 |
+
+Only the `ltx-2.5` first-run figure is a sum: the 96s load was measured on a 2s run, and
+the 5s cold run was not measured. Other conditions from the same session:
+
+| Condition | Time |
+|---|---|
+| 480p (512x832) / 2s / i2v | 148s cold, 52s warm |
+| 720p (704x1280) / 2s / i2v | 96s |
+| 480p (512x832) / 2s / first+last frame | 134s (single full-resolution pass, so heavier) |
+
+VRAM during generation peaked at 21.4/23.0GB with no `loaded partially` lines at all,
+so **720p runs natively on an L4**.
 
 Numbers are from an L4 with weights already downloaded; your own timings are worth
 measuring with `scripts/measure_video.py`, which separates the cold and warm runs.
@@ -260,7 +280,7 @@ Main fields of `POST /v1/generate`:
 | `task` | `i2v` | `t2v` / `i2v` / `r2v` (`r2v` is H3 only) |
 | `prompt` | — | References are addressed as `<Picture i>` / `<Video k>` / `<Audio j>` |
 | `negative` | per-model | Wan / LTX only; H3 ignores it |
-| `first_frame` / `last_frame` | — | base64 or data URI. Required for `i2v`. `last_frame` is H3 and `wan2.2` only |
+| `first_frame` / `last_frame` | — | base64 or data URI. Required for `i2v`. `last_frame` is H3, `wan2.2` and `ltx-2.5` only, always alongside `first_frame` |
 | `ref_images` / `ref_videos` / `ref_audios` | `[]` | For `r2v`. Max 9 / 3 / 3 |
 | `audio` | — | Driving audio for `wan2.2-s2v` |
 | `duration` | 5.0 | Seconds, rounded up to the model's frame grid |
@@ -337,7 +357,7 @@ Notable modules, relative to `src/`:
 | Path | Role |
 |---|---|
 | `server/app.py` | FastAPI service: auth, job queue, ComfyUI bridge |
-| `server/{h3,wan,ltx,image,post}_workflows.py` | Workflow builders in ComfyUI API format |
+| `server/{h3,wan,ltx,ltx25,image,post}_workflows.py` | Workflow builders in ComfyUI API format |
 | `server/video_common.py` | Shared size / duration maths and the output-stage upscale |
 | `server/comfy.py` | ComfyUI client (submit, poll, collect) |
 | `server/auth.py` | Key issue / store / verify (hashes only) |
@@ -364,7 +384,7 @@ read from `.colab/colab-api-key`. The variables below exist for other setups.
 | `TZ` | `Asia/Tokyo` | `colab` service: watchdog log timestamps |
 | `COMFY_URL` | `http://127.0.0.1:8188` | Server |
 | `WRAPPER_KEYS_PATH` | runtime path | Server: key store location |
-| `H3_*` / `LTX_*` / `CW_*` | per-model | Server: weight filename overrides |
+| `H3_*` / `LTX_*` / `LTX25_*` / `CW_*` | per-model | Server: weight filename overrides |
 
 ## Running outside Colab
 
@@ -418,14 +438,22 @@ are derived from the official ComfyUI workflow templates (MIT, Copyright (c) 202
 Comfy Org) — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Model weights carry
 their own terms:
 MiniMax H3 Community License (with a separate application form for USA/EU/UK/Korea),
-Apache-2.0 for Wan2.2, and the LTX-2 Community License Agreement for LTX-2.3. Review them
-before any commercial use.
+Apache-2.0 for Wan2.2, and the LTX-2 Community License Agreement for LTX-2.3 and LTX-2.5.
+Review them before any commercial use.
+
+**The LTX repositories on Hugging Face are gated.** Accept the license ("Agree and Access"
+on the model page) with the account behind your HF token before downloading, or the
+fetches return 403 — and because the build does not abort on a failed fetch, you end up
+with a running session that has no weights. 2.3 and 2.5 are separate repositories and need
+separate acceptance.
 
 ## Acknowledgements
 
 - [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) and
   [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) (quantized weights)
-- [Wan-AI](https://huggingface.co/Wan-AI) / [Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)
+- [Wan-AI](https://huggingface.co/Wan-AI) /
+  [Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3) /
+  [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5)
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) and
   [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
 - [google-colab-cli](https://github.com/googlecolab/google-colab-cli)

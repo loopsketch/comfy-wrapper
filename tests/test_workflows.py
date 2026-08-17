@@ -12,6 +12,7 @@ import _bootstrap  # noqa: F401
 
 import h3_workflows
 import image_workflows
+import ltx25_workflows
 import ltx_workflows
 import post_workflows
 import video_common
@@ -183,6 +184,56 @@ class LtxTest(unittest.TestCase):
     def test_upscale(self):
         wf = ltx_workflows.attach_upscale(self.build(), 1920, 1088, None)
         assert_graph(self, wf, ltx_workflows.SAVE_NODE_ID)
+
+
+class Ltx25Test(unittest.TestCase):
+    def build(self, **kwargs):
+        args = dict(prompt="a cat", width=1280, height=704, length=121, seed=1)
+        args.update(kwargs)
+        return ltx25_workflows.build(**args)
+
+    def test_t2v(self):
+        assert_graph(self, self.build(), ltx25_workflows.SAVE_NODE_ID)
+
+    def test_i2v(self):
+        assert_graph(self, self.build(first_frame="still.png"), ltx25_workflows.SAVE_NODE_ID)
+
+    def test_flf2v(self):
+        wf = self.build(first_frame="first.png", last_frame="last.png")
+        assert_graph(self, wf, ltx25_workflows.SAVE_NODE_ID)
+
+    def test_flf2v_is_single_pass(self):
+        """**単パス。** アップサンプラを通さず、ガイドを落としてからデコードする。"""
+        wf = self.build(first_frame="first.png", last_frame="last.png")
+        classes = {node["class_type"] for node in wf.values()}
+        self.assertNotIn("LTXVLatentUpsampler", classes)
+        self.assertIn("LTXVCropGuides", classes)
+        samplers = [n for n in wf.values() if n["class_type"] == "SamplerCustomAdvanced"]
+        self.assertEqual(len(samplers), 1)
+
+    def test_two_pass_has_no_crop_guides(self):
+        """ガイドを置いていないので、落とす段も要らない。"""
+        wf = self.build(first_frame="still.png")
+        classes = {node["class_type"] for node in wf.values()}
+        self.assertNotIn("LTXVCropGuides", classes)
+        self.assertIn("LTXVLatentUpsampler", classes)
+
+    def test_last_frame_alone_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.build(last_frame="last.png")
+
+    def test_canvas_multiple_is_enforced(self):
+        with self.assertRaises(ValueError):
+            self.build(width=1290, height=704)
+
+    def test_upscale(self):
+        wf = ltx25_workflows.attach_upscale(self.build(), 1920, 1088, None)
+        assert_graph(self, wf, ltx25_workflows.SAVE_NODE_ID)
+
+    def test_upscale_on_flf2v(self):
+        wf = self.build(first_frame="first.png", last_frame="last.png")
+        wf = ltx25_workflows.attach_upscale(wf, 1920, 1088, None)
+        assert_graph(self, wf, ltx25_workflows.SAVE_NODE_ID)
 
 
 class ImageTest(unittest.TestCase):
