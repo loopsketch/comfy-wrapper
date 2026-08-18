@@ -1,20 +1,21 @@
-"""静止画を1枚生成して手元へ回収する。
+"""静止画を1枚生成して手元へ回収する。cw image / cw jobs の実体。
 
     # テキストから
-    docker compose run --rm client src/scripts/generate_image.py \
-      submit "a cat on a neon-lit rooftop" --model z-image --aspect 9x16
+    cw image "a cat on a neon-lit rooftop" --model z-image --aspect 9x16
 
     # 参照画像つき(渡すと model によらず Qwen-Image-Edit の編集経路になる)
-    docker compose run --rm client src/scripts/generate_image.py \
-      submit "image 1 の人物が公園のベンチに座っている" --ref works/ref.png
+    cw image "image 1 の人物が公園のベンチに座っている" --ref ./ref.png
 
     # 待たずに投げて、あとでまとめて回収する
-    docker compose run --rm client src/scripts/generate_image.py submit "..." --no-wait
-    docker compose run --rm client src/scripts/generate_image.py status
+    cw image "..." --no-wait
+    cw jobs
 
 既定では完成まで待って png を書き出す(Z-Image で数十秒)。まとめて投げたいときは
 --no-wait で投入だけして、status で回収する。**ジョブ台帳はサーバのメモリにしかない**
 ので、ランタイムを止めると回収できなくなる。止める前に status を通すこと。
+
+**出力は CWD 相対、台帳はリポジトリ。** --out は呼んだ場所からの相対で受け、台帳へは
+絶対パスで書く。別のディレクトリから cw jobs を叩いても同じ場所へ回収できる。
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import colab_link
 
-STATE = Path("/app/works/.images/jobs.json")
-OUT_DIR = Path("/app/works/images")
+# 台帳は呼ぶ側のプロジェクトを汚さないようリポジトリ側に集約する
+STATE = colab_link.JOBS_DIR / "images.json"
 TERMINAL = ("succeeded", "failed", "canceled")
 
 ENDPOINT = colab_link.read_endpoint()
@@ -87,7 +88,7 @@ def cmd_submit(args) -> int:
     health = colab_link.health(ENDPOINT)
     if not health.get("comfy_ready"):
         print("ComfyUI がまだ準備できていません。構築の進捗を見てください:")
-        print("  src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup_status.py")
+        print("  cw status")
         return 1
 
     payload = {
@@ -107,7 +108,8 @@ def cmd_submit(args) -> int:
 
     job = json.loads(_req("POST", "/v1/images/generate", payload))
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = args.out or OUT_DIR / f"{stamp}_{job['model']}_{job['job_id']}.png"
+    # 台帳に相対パスを書くと、別の CWD から回収したときに違う場所へ落ちる
+    out = (args.out or Path(f"{stamp}_{job['model']}_{job['job_id']}.png")).resolve()
 
     print(f"投入した: {job['job_id']} / {job['model']} / "
           f"{job['width']}x{job['height']} / seed={job['seed']}")
@@ -199,7 +201,7 @@ def main() -> int:
     p.add_argument("--negative")
     p.add_argument("--seed", type=int, default=-1)
     p.add_argument("--steps", type=int, help="省略時はモデルの既定 (Z-Image 8 / Qwen 4)")
-    p.add_argument("--out", type=Path, help="既定は works/images/ に日時つきで書く")
+    p.add_argument("--out", type=Path, help="既定は CWD に日時つきで書く")
     p.add_argument("--no-wait", action="store_true", help="投入だけして status で回収する")
     p.add_argument("--timeout", type=float, default=300.0, help="待つ上限(秒)")
     p.add_argument("--interval", type=float, default=5.0)

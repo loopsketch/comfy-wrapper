@@ -59,9 +59,24 @@ class FakeComfyServer:
 
 
 class EndpointTest(unittest.TestCase):
-    def test_default(self):
-        with mock.patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(colab_link.read_endpoint(), "http://tunnel:8000")
+    def test_default_in_container(self):
+        """コンテナの中では compose のサービス名で解決する。"""
+        with TemporaryDirectory() as tmp:
+            marker = Path(tmp) / ".dockerenv"
+            marker.touch()
+            with mock.patch.dict("os.environ", {}, clear=True), \
+                 mock.patch.object(colab_link, "DOCKER_MARKER", marker):
+                self.assertEqual(colab_link.read_endpoint(), "http://tunnel:8000")
+
+    def test_default_on_host(self):
+        """ホスト (cw) からは tunnel が公開している 8000 を叩く。
+
+        同じ1本のトンネルに両側から届く。ここを間違えると、コンテナの外で
+        `tunnel` という名前を引きに行って「名前が解決できない」で止まる。
+        """
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch.object(colab_link, "DOCKER_MARKER", Path("/nonexistent/.dockerenv")):
+            self.assertEqual(colab_link.read_endpoint(), "http://127.0.0.1:8000")
 
     def test_env_override(self):
         with mock.patch.dict("os.environ", {"COLAB_ENDPOINT": "http://h:9/"}, clear=True):
@@ -74,6 +89,25 @@ class EndpointTest(unittest.TestCase):
     def test_argument_wins(self):
         with mock.patch.dict("os.environ", {"COLAB_ENDPOINT": "http://h:9"}, clear=True):
             self.assertEqual(colab_link.read_endpoint("http://x:2/"), "http://x:2")
+
+
+class RepoHomeTest(unittest.TestCase):
+    """置き場の解決。コンテナ内なら /app、ホストならクローン先を指すこと。"""
+
+    def test_two_levels_up_from_lib(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            home = colab_link.repo_home()
+        self.assertTrue((home / "src" / "lib" / "colab_link.py").exists())
+
+    def test_env_override(self):
+        with TemporaryDirectory() as tmp:
+            with mock.patch.dict("os.environ", {"COMFY_WRAPPER_HOME": tmp}, clear=True):
+                self.assertEqual(colab_link.repo_home(), Path(tmp).resolve())
+
+    def test_ledger_lives_under_the_repo(self):
+        """台帳は呼ぶ側の CWD ではなくリポジトリ側。別の場所から回収できるように。"""
+        self.assertEqual(colab_link.JOBS_DIR.parent, colab_link.COLAB_DIR)
+        self.assertEqual(colab_link.COLAB_DIR.parent, colab_link.HOME)
 
 
 class ApiKeyTest(unittest.TestCase):
@@ -95,7 +129,7 @@ class ApiKeyTest(unittest.TestCase):
              mock.patch.object(colab_link, "LEGACY_API_KEY_FILE", Path("/nonexistent/b")):
             with self.assertRaises(colab_link.LinkError) as cm:
                 colab_link.require_api_key()
-            self.assertIn("colab_key.sh", str(cm.exception))
+            self.assertIn("cw key issue", str(cm.exception))
 
 
 class PricingTest(unittest.TestCase):
@@ -136,7 +170,12 @@ class DiagnoseTest(unittest.TestCase):
             sessions.write_text(json.dumps({"comfy": {}}))
             with mock.patch.object(colab_link, "AUTH_STATE", Path(tmp) / "none.json"), \
                  mock.patch.object(colab_link, "SESSIONS", sessions):
-                self.assertIn("トンネル", colab_link.diagnose())
+                message = colab_link.diagnose()
+        self.assertIn("トンネル", message)
+        # **セッションは残っている。** 確保し直させると生きたランタイムを捨てて
+        # もう一度 GPU を掴むことになる
+        self.assertIn("cw tunnel restart", message)
+        self.assertNotIn("cw up", message)
 
 
 class RequestTest(unittest.TestCase):

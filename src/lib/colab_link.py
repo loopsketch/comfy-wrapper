@@ -24,7 +24,24 @@ class LinkError(RuntimeError):
     """手元から Colab 側の API へ届かなかった、または API がエラーを返した。"""
 
 
-COLAB_DIR = Path("/app/.colab")
+def repo_home() -> Path:
+    """このリポジトリの場所。コンテナ内では /app、ホストではクローン先。
+
+    `src/lib/colab_link.py` の2つ上が根なので、1つの式で両方に当たる。
+    editable install の `cw` から呼んでもソースツリーを指す。
+    """
+    override = os.environ.get("COMFY_WRAPPER_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[2]
+
+
+HOME = repo_home()
+# 鍵・トークン・台帳の置き場。**呼ぶ側の CWD ではなくリポジトリに集約する。**
+# 別のディレクトリから cw を叩いても同じものを見る
+COLAB_DIR = HOME / ".colab"
+# 投入済みジョブの台帳。出力先は絶対パスで持つので、どこから回収してもよい
+JOBS_DIR = COLAB_DIR / "jobs"
 API_KEY_FILE = COLAB_DIR / "colab-api-key"
 # 旧名。リネーム前に発行したキーをそのまま使えるようにする
 LEGACY_API_KEY_FILE = COLAB_DIR / "h3-api-key"
@@ -32,7 +49,12 @@ AUTH_STATE = COLAB_DIR / "auth-state.json"
 SESSIONS = COLAB_DIR / ".config" / "colab-cli" / "sessions.json"
 GPU_FILE = COLAB_DIR / "gpu"
 
+# コンテナ内 (client / colab) からは compose のサービス名で解決する
 DEFAULT_ENDPOINT = "http://tunnel:8000"
+# ホストからは tunnel サービスが公開している 8000 を叩く
+HOST_ENDPOINT = "http://127.0.0.1:8000"
+# コンテナの中かどうかの判定。docker が必ず置くファイル
+DOCKER_MARKER = Path("/.dockerenv")
 
 # cloudflared を挟んでいた頃の名残。ssh -L の経路では接続拒否 (URLError) になるが、
 # 前段にプロキシがある構成では今もこのコードで返る
@@ -59,13 +81,22 @@ def _read_json(path: Path):
         return None
 
 
+def default_endpoint() -> str:
+    """宛先の既定。コンテナの中と外で別の名前になる。
+
+    tunnel サービスは 8000 をホストへも公開しているので、**同じ1つのトンネルに
+    どちらからも届く**。呼ぶ側が場所を意識しなくて済むよう、ここで振り分ける。
+    """
+    return DEFAULT_ENDPOINT if DOCKER_MARKER.exists() else HOST_ENDPOINT
+
+
 def read_endpoint(endpoint: str | None = None) -> str:
     """宛先を決める。tunnel サービスで固定されるので通常は設定不要。"""
     value = (
         endpoint
         or os.environ.get("COLAB_ENDPOINT")
         or os.environ.get("COLAB_H3_ENDPOINT")  # 旧名。既存の .env をそのまま通す
-        or DEFAULT_ENDPOINT
+        or default_endpoint()
     )
     return value.rstrip("/")
 
@@ -97,7 +128,7 @@ def require_api_key(api_key: str | None = None) -> str:
     if not key:
         raise LinkError(
             f"アクセスキーがありません。{API_KEY_FILE} が無い場合は "
-            "src/scripts/colab_key.sh で発行してください"
+            "cw key issue --name <用途> で発行してください"
         )
     return key
 
@@ -136,17 +167,16 @@ def diagnose() -> str:
         return (
             "Colab の認証が切れています。docker compose exec colab colab sessions で"
             "入れ直してください。**切れている間はランタイムの確認も停止もできない**ので、"
-            "入れ直したあと src/scripts/colab.sh sessions で現物を見ること"
+            "入れ直したあと cw sessions で現物を見ること"
         )
     sessions = _read_json(SESSIONS)
     if sessions is not None and not sessions:
         return (
-            "Colab のセッションがありません。src/scripts/colab_run.sh で"
-            "確保し直してください"
+            "Colab のセッションがありません。cw up で確保し直してください"
         )
     return (
-        "トンネルが切れています。docker compose restart tunnel を試してください"
-        "(台帳にはセッションが残っています)"
+        "トンネルが切れています。**セッションは台帳に残っている**ので、確保し直さずに "
+        "cw tunnel restart で張り直してください"
     )
 
 

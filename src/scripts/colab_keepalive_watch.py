@@ -81,6 +81,8 @@ RESCUE_DIRS = [
         "/content/logs:/content/jobs",
     ).split(":") if d
 ]
+# **ここだけ /app 固定でよい。** この見張りは colab コンテナの中でしか動かない
+# (colab_watch.sh が docker compose exec で起こす)。手元から直接叩く経路は無い
 RESCUE_ROOT = Path("/app/works/.rescue")
 
 # Colab 側で1回だけ実行して、進捗の材料をまとめて取る。

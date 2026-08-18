@@ -1,14 +1,12 @@
-"""生成済みのクリップを仕上げる(フレーム補間 + アップスケール)。
+"""生成済みのクリップを仕上げる(フレーム補間 + アップスケール)。cw post の実体。
 
     # 1080p24 のクリップを 4K のまま出す(補間なし)
-    docker compose run --rm client src/scripts/postprocess.py \
-      submit works/.verify/measure_ltx-2.3-gguf_2.mp4 --size 4k
+    cw post ./clip.mp4 --size 4k
 
     # 16fps のクリップを 48fps に増やして 4K にする
-    docker compose run --rm client src/scripts/postprocess.py \
-      submit works/.verify/measure_wan2.2_2.mp4 --size 4k --multiplier 3
+    cw post ./clip.mp4 --size 4k --multiplier 3
 
-    docker compose run --rm client src/scripts/postprocess.py status
+    cw jobs
 
 **尺は変えない。** 補間で増えたフレーム数に合わせて fps が上がる(8fps x3 = 24fps)。
 
@@ -36,11 +34,13 @@ from pathlib import Path
 # パッケージとしては解決されない)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import colab_link
+from lib import colab_link, mp4_probe
 
 # 宛先とキーの解決は colab_link に集約してある(旧名の環境変数も読む)
 ENDPOINT = colab_link.read_endpoint()
-STATE = Path("/app/works/.verify/postprocess.json")
+# 台帳は呼ぶ側のプロジェクトを汚さないようリポジトリ側に集約する。
+# 出力先は絶対パスで持つので、別の CWD から回収しても同じ場所に落ちる
+STATE = colab_link.JOBS_DIR / "postprocess.json"
 
 SIZES = {
     "4k": (3840, 2160),
@@ -68,13 +68,41 @@ def _req(method: str, path: str, payload: dict | None = None, timeout: int = 600
 
 
 def _probe(path: Path) -> dict:
-    """入力の fps・フレーム数・寸法を ffprobe で読む。"""
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
-         "-of", "json", str(path)],
-        capture_output=True, text=True, check=True,
-    )
+    """入力の fps・フレーム数・寸法を読む。
+
+    **まず自前で mp4 のヘッダを読む。** ここで要るのは4つの値だけで、どれも moov の
+    中に平文で入っている。仕上げのためだけに ffmpeg を入れさせない (この経路は
+    ホストの python で動くので、入れる負担がそのまま利用者に乗る)。
+
+    mp4 以外や断片化されたものは自前では読めないので、そのときだけ ffprobe に回す。
+    **どちらも駄目なら、何が足りないかを名指しして落とす。** 黙って既定値で代用すると、
+    倍率と RAM の見積もりが入力と噛み合わないまま投入され、GPU 時間を捨てることになる。
+    """
+    try:
+        return mp4_probe.probe(path)
+    except mp4_probe.Unsupported as exc:
+        reason = str(exc)
+    except OSError as exc:
+        raise SystemExit(f"動画を読めませんでした: {exc}") from exc
+
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
+             "-of", "json", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"{path.name} は手元では読めませんでした ({reason})。"
+            "mp4 以外を仕上げるには ffprobe が要ります。ffmpeg を入れるか "
+            "(Debian/Ubuntu: sudo apt install ffmpeg / macOS: brew install ffmpeg)、"
+            "入力を mp4 にしてください"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            f"ffprobe が {path} を読めませんでした: {exc.stderr.strip()[:300]}"
+        ) from exc
     s = json.loads(out.stdout)["streams"][0]
     num, den = s["r_frame_rate"].split("/")
     return {
@@ -172,10 +200,12 @@ def cmd_submit(args) -> int:
 
     job = json.loads(_req("POST", "/v1/postprocess", payload))
     state = _state()
+    source = args.video.resolve()
     state["jobs"].append({
         "job_id": job["job_id"],
-        "source": str(args.video),
-        "out": str(args.video.with_name(f"{args.video.stem}_post.mp4")),
+        "source": str(source),
+        # 台帳に相対パスを書くと、別の CWD から回収したときに違う場所へ落ちる
+        "out": str(source.with_name(f"{source.stem}_post.mp4")),
         "size": f"{width or src['width']}x{height or src['height']}",
         "fps": out_fps,
         "multiplier": args.multiplier,

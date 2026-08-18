@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""公開された API に 1 本だけ投げて疎通を確かめる。
+"""動画を1本生成して手元へ回収する。cw video の実体。
 
-  docker compose run --rm client src/scripts/smoke_test.py
+  # テキストから
+  cw video --prompt "..." --model ltx-2.5 --out ./clip.mp4
+  # 静止画から (i2v)
+  cw video ./hero.png --model ltx-2.5 --out ./clip.mp4
+
+引数なしで叩くと既定のプロンプトで1本流れるので、そのまま疎通確認にも使える
+(この用途で始まったので、以前の名前は smoke_test.py だった)。
 
 宛先は tunnel サービスで固定されるので、通常は --endpoint も --key も要らない
 (cloudflared の quick tunnel を使っていた頃は URL が毎回変わるので必須だった)。
 Colab 以外に立てたときだけ --endpoint で上書きする。
+
+**出力は CWD 相対。** --out を省くと呼んだ場所に日時つきで書く。
 """
 
 from __future__ import annotations
@@ -18,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 
+from datetime import datetime
 from pathlib import Path
 
 # scripts/ の隣にある lib/ を通す (実行は python src/scripts/xxx.py の形なので
@@ -47,10 +56,12 @@ def call(endpoint: str, key: str, method: str, path: str, payload: dict | None =
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        epilog="cw video ./hero.png のように画像を位置引数で渡すと --first-frame になります",
+    )
     parser.add_argument("--endpoint", default=colab_link.read_endpoint())
     parser.add_argument("--key", default=colab_link.read_api_key())
-    parser.add_argument("--out", default="smoke.mp4", type=Path)
+    parser.add_argument("--out", type=Path, help="既定は CWD に日時つきで書く")
     parser.add_argument("--model", help="省略時はサーバの既定 (minimax-h3)")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--duration", type=float, default=5.0)
@@ -110,7 +121,9 @@ def main() -> int:
         time.sleep(10)
 
     video = call(args.endpoint, args.key, "GET", f"/v1/jobs/{job['job_id']}/video")
-    out = args.out.resolve()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    default = Path(f"{stamp}_{job.get('model', 'video')}_{job['job_id']}.mp4")
+    out = (args.out or default).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(video)
     # 書いたつもりの値ではなく、実際にディスク上にあるサイズを報告する

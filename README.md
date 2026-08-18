@@ -7,7 +7,15 @@ machine as a plain, key-authenticated HTTP API.
 
 comfy-wrapper drives [ComfyUI](https://github.com/comfyanonymous/ComfyUI) on a Colab
 runtime, puts a small FastAPI service in front of it, and tunnels that service to your
-laptop over SSH. Nothing but Docker is installed on the host.
+laptop over SSH. All the host needs is Docker and `cw`, a dependency-free CLI.
+
+```bash
+uv tool install --editable /path/to/comfy-wrapper
+
+cw up --setup image --models z-image --gpu L4 --max 60
+cw image "a pug on a sunlit windowsill" --out ./hero.png
+cw stop
+```
 
 ```
 POST /v1/generate  ->  job_id   (202, generation runs in the background)
@@ -26,10 +34,14 @@ GET  /v1/jobs/{id}/video -> mp4
 - **ComfyUI is never exposed.** ComfyUI has no authentication, so it stays bound to
   `127.0.0.1` on the runtime. Only the FastAPI service is reachable, and only through
   an SSH tunnel with a bearer key.
-- **Plaintext keys never leave your machine.** `colab_key.sh` issues keys locally and
+- **Plaintext keys never leave your machine.** `cw key issue` issues keys locally and
   ships only SHA-256 hashes to the runtime.
-- **Nothing installed on the host.** Three containers (`client`, `colab`, `tunnel`),
-  all `python:3.12-slim`. No Python, no CUDA, no ComfyUI locally.
+- **Callers need to know three fewer things.** `cw` hides where the repository lives,
+  what the compose services are called, and what the paths inside the container are.
+  Generation runs on the host's own Python (stdlib only, zero dependencies), so
+  `--ref ./ref.png` and `--out ./hero.png` stay relative to your current directory.
+- **No CUDA and no ComfyUI on the host.** Three containers (`client`, `colab`, `tunnel`),
+  all `python:3.12-slim`.
 - **A watchdog that stops the meter.** Colab bills GPU wall-clock time, so
   `colab_watch.sh` keeps the runtime alive while work is running and shuts it down
   (after collecting outputs) once it goes idle or hits a time limit.
@@ -52,13 +64,15 @@ GET  /v1/jobs/{id}/video -> mp4
 [ComfyUI :8188]      workflow execution
 ```
 
-The endpoint is fixed at `http://tunnel:8000`; it does not change between sessions.
+Inside the containers the endpoint is `http://tunnel:8000`; from the host `cw` talks to
+the same tunnel on `http://127.0.0.1:8000`. Neither changes between sessions.
 
 ## Requirements
 
 | | |
 |---|---|
 | Host | Linux / macOS / WSL2 with Docker and Compose **v2** (`docker compose`, not `docker-compose`). Ports 8000 and 8188 free |
+| `cw` | Python **3.11+**, installed with `uv` or `pipx`. The package has no dependencies and does not need ffmpeg (`cw post` reads mp4 headers itself; ffprobe is only used for non-mp4 inputs) |
 | Google account | Colab **compute units are required** — a free account cannot allocate a GPU runtime from the CLI |
 | Browser | Once, for the initial OAuth code paste. It may be a browser on a different machine, so headless hosts are fine |
 | SSH key | ed25519 or ecdsa. RSA is rejected |
@@ -70,6 +84,18 @@ unauthenticated downloads are throttled hard (measured 622MB/s vs 8MB/s), and do
 time is billed GPU time.
 
 ## Quick start
+
+### 0. Install `cw`
+
+```bash
+uv tool install --editable /path/to/comfy-wrapper   # `pipx install -e .` works too
+cw --help
+```
+
+`--editable` matters: `cw` uses this source tree directly. **Generation (`image`,
+`video`, `post`, `jobs`, `models`) runs on the host's Python**, and only the operational
+commands (`up`, `stop`, `status`, ...) reach for `docker compose` internally. If you move
+the repository, point `COMFY_WRAPPER_HOME` at it.
 
 ### 1. One-time setup
 
@@ -92,65 +118,98 @@ OAuth token every 30 minutes on its own, so the browser step is needed only once
 ### 2. Allocate a runtime and build it
 
 ```bash
-src/scripts/colab.sh new -s comfy --gpu L4
-src/scripts/colab_watch.sh comfy 90              # watchdog, 90-minute cap
-
-src/scripts/colab_push.sh comfy                  # ship src/
-src/scripts/colab_key.sh comfy                   # ship key hashes
-src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup.py
-src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup_status.py
+cw up --setup image --models z-image --gpu L4 --max 60
 ```
 
-Installing ComfyUI and fetching weights takes 15-25 minutes. `colab exec` runs
-synchronously and its WebSocket drops on long jobs, so setup detaches with `nohup` and
-you poll `colab_setup_status.py` for progress. Use `colab_video_setup.py` or
-`colab_image_setup.py` to build for Wan/LTX or for the image models instead of H3.
-
-### 3. Open the tunnel
+Allocate → ship code and keys → build → open the tunnel, unattended, and **the session
+stays up** (unlike `cw run`, which stops it). Installing ComfyUI and fetching weights
+takes 15-25 minutes. `--setup` is `image` (stills), `video` (Wan2.2 / LTX) or `h3`
+(MiniMax H3). `--max` is the watchdog's cap in minutes; past it the watchdog stops the
+runtime for you.
 
 ```bash
-src/scripts/colab.sh exec -s comfy -f src/scripts/colab_serve_status.py
-docker compose up -d tunnel
+cw status     # compose, sessions, watchdog and reachability on one screen
 ```
 
-### 4. Generate
+### 3. Generate
+
+Paths are **relative to your current directory**, so it does not matter where you run it.
 
 ```bash
-# video
-docker compose run --rm client src/scripts/smoke_test.py --aspect 9x16 --out works/smoke.mp4
-docker compose run --rm client src/scripts/smoke_test.py --first-frame works/still.png
-
 # stills (waits for the job and writes the png)
-docker compose run --rm client src/scripts/generate_image.py \
-  submit "a cat on a neon-lit rooftop" --model z-image --aspect 9x16
-docker compose run --rm client src/scripts/generate_image.py \
-  submit "the person in image 1, sitting on a park bench" --ref works/ref.png
+cw image "a cat on a neon-lit rooftop" --model z-image --aspect 9x16 --out ./cat.png
+cw image "the person in image 1, sitting on a park bench" --ref ./ref.png
+
+# video: pass an image for i2v, omit it for t2v
+cw video ./cat.png --model ltx-2.5 --out ./clip.mp4
+cw video --prompt "rain on neon streets" --duration 5
+
+# finishing (frame interpolation + upscale)
+cw post ./clip.mp4 --size 4k --multiplier 2
+
+# submit a batch, collect it later
+cw image "..." --no-wait
+cw jobs
+
+cw models     # what each model can do, and what a second of output costs
 ```
 
-### 5. Stop
+Outputs land in your current directory; the **job ledger lives in the repository under
+`.colab/jobs/`, with absolute output paths**. Callers' projects stay clean, and `cw jobs`
+collects to the right place from any directory.
+
+### 4. Stop
 
 ```bash
-src/scripts/colab.sh stop -s comfy
-src/scripts/colab.sh sessions      # asks the server, not the local ledger
-docker compose stop tunnel
+cw stop
 ```
 
-Billing is per GPU-hour, so confirm the session is really gone.
+Watchdog → session → **ask the server** → tunnel, in that order. A session leaving the
+local ledger is not the same as the remote runtime stopping, so the last thing printed is
+what the server says. Billing is per GPU-hour: confirm the session is really gone.
 
 **Do not leave `tunnel` running.** With no session present, its ProxyCommand
 (`colab ssh -s comfy`) allocates a runtime under that name — observed as a CPU runtime,
-so no compute units are spent, but it is an allocation you did not ask for. Include
-`docker compose stop tunnel` when you finish.
+so no compute units are spent, but it is an allocation you did not ask for. `cw stop`
+folds the tunnel too.
 
 ### Unattended runs
 
-`colab_run.sh` does allocate → build → run → stop in one command, and always stops the
-session even on failure. Everything after `--` is passed to Python in the `client`
-container.
+`cw run` does allocate → build → run → stop in one command, and always stops the session
+even on failure. Everything after `--` is passed to Python in the `client` container, so
+**that part alone uses container paths**.
 
 ```bash
-src/scripts/colab_run.sh --setup video --models ltx-2.3-gguf --gpu L4 --max 60 -- \
-  src/scripts/measure_video.py submit works/still.png --model ltx-2.3-gguf --aspect 9x16
+cw run --setup video --models ltx-2.5 --gpu L4 --max 60 -- \
+  src/scripts/measure_video.py submit works/still.png --model ltx-2.5 --aspect 9x16
+```
+
+### Under the hood (when something breaks)
+
+When the session is alive but nothing reaches it, restart only the tunnel. **Do not
+re-allocate** — that throws away a live runtime and takes a GPU again.
+
+```bash
+cw tunnel restart     # up / stop / logs are there too
+```
+
+`cw` runs the existing scripts as they are, so you can call them directly.
+
+```bash
+docker compose ps
+docker compose logs --tail 50 tunnel
+src/scripts/colab.sh sessions
+src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup_status.py
+src/scripts/colab_watch.sh --status
+```
+
+If you cannot install Python on the host, generation still runs in the container —
+that is what `docker/Dockerfile.client` is for. It ships ffmpeg, which also makes it the
+way out when you need to finish something that is not an mp4.
+
+```bash
+docker compose run --rm client src/scripts/generate_image.py submit "..." --model z-image
+docker compose run --rm client src/scripts/generate_video.py --first-frame works/still.png
 ```
 
 ## Using it from Claude Code
@@ -173,10 +232,10 @@ retries transient failures, and reports why a request failed.
 
 ```python
 import sys, base64, json
-sys.path.insert(0, "/app/src")
+sys.path.insert(0, "/path/to/comfy-wrapper/src")   # /app/src inside the containers
 from lib import colab_link
 
-endpoint = colab_link.read_endpoint()      # http://tunnel:8000 by default
+endpoint = colab_link.read_endpoint()      # tunnel:8000 in a container, 127.0.0.1:8000 on the host
 key = colab_link.require_api_key()         # reads .colab/colab-api-key
 
 still = base64.b64encode(open("works/still.png", "rb").read()).decode()
@@ -213,9 +272,22 @@ HTTP instead of vendoring it.** The OAuth token, SSH key and session ledger in
 get `Already-active SSH session (HTTP 429)` or an idle-pruned session. Do not give the
 calling project its own `colab` / `tunnel` services.
 
-One shared network keeps the endpoint resolving as `http://tunnel:8000`, so the caller
-changes neither its code nor its configuration, and no port is exposed on the host. The
-caller just repeats the **same declaration** this repository uses.
+There are two routes: **`cw` when a person asks, HTTP when code asks.**
+
+```bash
+# in the calling project
+uv tool install --editable /path/to/comfy-wrapper
+cd /path/to/your-project
+cw image "..." --out ./assets/hero.png     # output here, ledger in comfy-wrapper
+```
+
+`cw` only ever points at the one repository on the machine, so nothing gets duplicated.
+Generated files land where you ran it; the job ledger and the keys stay on the
+comfy-wrapper side.
+
+For code, one shared network keeps the endpoint resolving as `http://tunnel:8000`, so the
+caller changes neither its code nor its configuration, and no port is exposed on the
+host. The caller just repeats the **same declaration** this repository uses.
 
 ```yaml
 # the caller's docker-compose.yml
@@ -237,14 +309,14 @@ Issue **one key per project** — sharing `.colab/colab-api-key` means you canno
 one caller without breaking the others.
 
 ```bash
-docker compose exec -T colab python src/scripts/genkey.py \
-  --keys /app/.colab/comfy-keys.json issue --name <project> --env
-docker compose exec -T colab python src/scripts/genkey.py \
-  --keys /app/.colab/comfy-keys.json list
+cw key issue --name <project>   # the plaintext key is shown only here
+cw key list
+cw key push                     # ship the hashes to the runtime
+cw key revoke --id <id>
 ```
 
-Put the printed `COLAB_API_KEY=...` in the caller's `.env`. The runtime picks the new
-key up the next time you run `colab_key.sh` (only the hash is uploaded).
+Put the printed `COLAB_API_KEY=...` in the caller's `.env`. **Only SHA-256 hashes ever
+reach the runtime**, which is why issuing and shipping (`cw key push`) are two steps.
 
 **Read the model table from `GET /v1/models` instead of copying it.** It returns
 resolutions, audio support, throughput and weight sizes. A copy goes stale the moment a
@@ -268,6 +340,9 @@ The caller only needs to know three things:
 example — it used to carry this code inside it, and is the project this was extracted from.
 
 ## Models
+
+`cw models` prints the same table (with no runtime too — only "is it loaded" goes
+unknown).
 
 One model per session: each is 30-45GB and they do not fit in `/content`, let alone VRAM,
 at the same time.
@@ -376,9 +451,8 @@ LoadVideo -> GetVideoComponents -> FrameInterpolate -> ImageUpscaleWithModel
 ```
 
 ```bash
-docker compose run --rm client src/scripts/postprocess.py \
-  submit works/clip.mp4 --size 4k-portrait --multiplier 2
-docker compose run --rm client src/scripts/postprocess.py status
+cw post ./clip.mp4 --size 4k-portrait --multiplier 2
+cw jobs
 ```
 
 The models total 226MB and are installed by every build (`--no-postprocess` to skip).
@@ -387,10 +461,30 @@ generate at an fps that divides your target cleanly. Peak cost is system RAM, dr
 the upscaler's intermediate size (input x factor), not the target size; `postprocess.py`
 picks x2 or x4 and refuses to submit above a 30GB estimate.
 
+Input size, fps and frame count come from `lib/mp4_probe.py`, which reads the mp4 header
+directly, so **finishing does not require ffmpeg on the host.** Only non-mp4 containers
+(webm / mkv) and fragmented mp4 fall back to ffprobe; without that it names what is
+missing rather than guessing — a silent default would mean submitting an estimate that
+does not match the input.
+
 ## Tests
 
 ```bash
-docker compose run --rm client -m unittest discover -s tests -t tests
+python3 -m unittest discover -s tests -t tests                          # on the host
+docker compose run --rm client -m unittest discover -s tests -t tests   # in the container
+```
+
+**Both must pass.** `cw` runs on the host's Python while `docker compose run --rm client`
+runs inside the container, so getting the repository-root resolution wrong (`/app` versus
+the clone) breaks exactly one of them.
+
+Select a subset with `-p` (tests `import _bootstrap` from outside `tests/`, so
+`python3 tests/test_cli.py` does not work).
+
+```bash
+python3 -m unittest discover -s tests -t tests -p 'test_cli.py'        # cw dispatch
+python3 -m unittest discover -s tests -t tests -p 'test_mp4_probe.py'  # mp4 header parsing
+python3 -m unittest discover -s tests -t tests -k Endpoint             # by name
 ```
 
 No GPU, no Colab runtime, no network — the suite covers the logic you can get wrong
@@ -411,26 +505,39 @@ without noticing until a runtime is already billing:
   process: a Xet stall raises no exception, so a try/except test would not reproduce it
 - **OAuth renewal**: it runs from an unattended loop, so it must never raise, and it must
   not conflate "needs reauth" with "could not tell"
+- **`cw` dispatch**: what gets handed to what, that `cw run ... -- <work>` keeps its `--`,
+  that operational commands keep `docker compose` out of the caller's sight, and that
+  `cw models` still prints a table with no runtime
+- **mp4 header parsing**: not mistaking an audio track for the video one, not losing
+  frames when `stts` is split into runs, and not answering 0 frames for a fragmented
+  mp4 — get this wrong and both the multiplier and the RAM estimate are wrong, which
+  you only discover after submitting
+- **finishing pre-conditions**: mp4 is read with no external command, and unreadable
+  formats name what is needed instead of quietly substituting defaults
 
 ## Repository layout
 
 ```
+pyproject.toml         package definition for cw / comfy-wrapper (no dependencies)
 docker-compose.yml     client / colab / tunnel
 docker/                images for each service
 .claude/skills/        Claude Code skills (colab-comfy: run it / h3-prompt: write for H3)
 src/
+  cli/                 the cw dispatcher (installed as comfy_wrapper)
   server/              FastAPI + ComfyUI bridge; runs on the Colab runtime
   setup/               weight downloads
   scripts/             operational scripts, local and runtime side
   lib/                 local shared layer (endpoint, key, retry, pricing)
 tests/                 unit tests (stdlib unittest, no GPU or network)
 works/                 outputs, measurements, rescued artifacts (git-ignored)
+.colab/                tokens, SSH key, key store, job ledger (git-ignored)
 ```
 
 Notable modules, relative to `src/`:
 
 | Path | Role |
 |---|---|
+| `cli/main.py` | The `cw` dispatcher: generation calls `scripts/` `main()` in-process, operations run the `*.sh` |
 | `server/app.py` | FastAPI service: auth, job queue, ComfyUI bridge |
 | `server/{h3,wan,ltx,ltx25,image,post}_workflows.py` | Workflow builders in ComfyUI API format |
 | `server/video_common.py` | Shared size / duration maths and the output-stage upscale |
@@ -441,19 +548,23 @@ Notable modules, relative to `src/`:
 | `scripts/colab_run.sh` | Allocate → build → run → stop, unattended |
 | `scripts/colab_watch.sh` | Watchdog: keep-alive, progress, auto-stop, artifact rescue |
 | `scripts/generate_image.py` | Submit a still-image job and collect the png |
+| `scripts/generate_video.py` | Submit a video job and collect the mp4 (with no arguments, an end-to-end check) |
+| `scripts/postprocess.py` | Submit and collect finishing jobs (interpolation + upscale) |
 | `scripts/measure_video.py` | Timing measurements (cold vs warm) |
-| `scripts/smoke_test.py` | End-to-end check against the public API |
 | `lib/colab_link.py` | Endpoint / key resolution, retries, failure diagnosis |
+| `lib/mp4_probe.py` | Size, fps and frame count from the mp4 header (for the finishing estimate; no ffmpeg needed) |
 | `lib/video_sizes.py` | `480p` / `720p` / `1080p` to per-model canvas and output sizes |
 
 ## Configuration
 
-There is nothing to configure for the standard path — the endpoint is fixed and keys are
-read from `.colab/colab-api-key`. The variables below exist for other setups.
+There is nothing to configure for the standard path — the endpoint is picked
+automatically depending on whether you are inside a container, and keys are read from
+`.colab/colab-api-key`. The variables below exist for other setups.
 
 | Variable | Default | Where |
 |---|---|---|
-| `COLAB_ENDPOINT` | `http://tunnel:8000` | Client. Override when the server runs elsewhere |
+| `COMFY_WRAPPER_HOME` | the source tree `cw` was installed from | `cw`: point it at a moved repository |
+| `COLAB_ENDPOINT` | `http://tunnel:8000` in a container, `http://127.0.0.1:8000` on the host | Client and `cw`. Override when the server runs elsewhere |
 | `COLAB_SESSION` | `comfy` | `tunnel` service: which session to forward |
 | `COLAB_AUTH_LOOP_MINUTES` | `30` | `colab` service: OAuth refresh interval |
 | `TZ` | `Asia/Tokyo` | `colab` service: watchdog log timestamps |
@@ -494,7 +605,7 @@ liability whatsoever.
   **does not guarantee that the runtime stops.** Expired credentials, a dropped network,
   or a script that dies unexpectedly can all leave a runtime running, and the author is
   not liable for any charges that result. Confirm the runtime is really gone yourself
-  with `src/scripts/colab.sh sessions`.
+  with `cw sessions`, which asks the server.
 - **Model and output usage is your responsibility.** Reviewing and complying with each
   model's license and terms, and handling whatever you generate, are up to you; the
   author is not liable for any issue arising from either.

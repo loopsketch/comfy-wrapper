@@ -1,0 +1,304 @@
+"""cw の振り分け。何をどこへ渡すかだけを見る (生成そのものは既存のテストが見ている)。
+
+**ここで確かめたいのは「呼ぶ側が3つを知らずに済んでいるか」。** リポジトリの場所・
+compose のサービス名・コンテナ内のパスが漏れていないこと、生成系がサブプロセスを
+挟まずに動くこと、運用系が cwd=<リポジトリ> で既存のスクリプトを呼ぶこと。
+"""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
+
+import _bootstrap  # noqa: F401
+
+from cli import main as cw
+
+
+class Recorder:
+    """_call_script / _sh の代わりに、呼ばれ方だけを控える。"""
+
+    def __init__(self, rc: int = 0):
+        self.calls: list[tuple] = []
+        self.rc = rc
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        return self.rc
+
+
+class RepoTest(unittest.TestCase):
+    def test_repo_is_the_source_tree(self):
+        """`__file__` の2つ上。editable install でもソースツリーを指すこと。"""
+        with mock.patch.dict("os.environ", {}, clear=True):
+            repo = cw.repo_home()
+        self.assertTrue((repo / "src" / "scripts" / "generate_image.py").exists())
+        self.assertTrue((repo / "docker-compose.yml").exists())
+
+    def test_env_override(self):
+        with TemporaryDirectory() as tmp:
+            with mock.patch.dict("os.environ", {"COMFY_WRAPPER_HOME": tmp}, clear=True):
+                self.assertEqual(cw.repo_home(), Path(tmp).resolve())
+
+    def test_missing_script_names_the_fix(self):
+        with mock.patch.object(cw, "SCRIPTS", Path("/nonexistent/scripts")):
+            with self.assertRaises(SystemExit) as cm:
+                cw._load_script("generate_image")
+        self.assertIn("COMFY_WRAPPER_HOME", str(cm.exception))
+
+
+class DispatchTest(unittest.TestCase):
+    def setUp(self):
+        self.script = Recorder()
+        patcher = mock.patch.object(cw, "_call_script", self.script)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_image_goes_to_submit(self):
+        cw.main(["image", "a pug", "--model", "z-image", "--out", "./hero.png"])
+        self.assertEqual(
+            self.script.calls,
+            [("generate_image", "cw image",
+              ["submit", "a pug", "--model", "z-image", "--out", "./hero.png"])],
+        )
+
+    def test_image_tolerates_an_explicit_submit(self):
+        """--help の usage が `cw image submit ...` と出るので、そう打たれても通す。"""
+        cw.main(["image", "submit", "a pug"])
+        self.assertEqual(self.script.calls[0][2], ["submit", "a pug"])
+
+    def test_video_takes_the_still_as_a_positional(self):
+        cw.main(["video", "./hero.png", "--model", "ltx-2.5"])
+        self.assertEqual(
+            self.script.calls[0][2],
+            ["--first-frame", "./hero.png", "--model", "ltx-2.5"],
+        )
+
+    def test_video_without_a_still_is_t2v(self):
+        cw.main(["video", "--prompt", "rain on neon streets"])
+        self.assertEqual(self.script.calls[0][2], ["--prompt", "rain on neon streets"])
+
+    def test_post_goes_to_submit(self):
+        cw.main(["post", "./clip.mp4", "--size", "4k"])
+        self.assertEqual(self.script.calls[0][2], ["submit", "./clip.mp4", "--size", "4k"])
+
+    def test_measure_passes_through(self):
+        cw.main(["measure", "status", "--model", "wan2.2"])
+        self.assertEqual(self.script.calls[0][2], ["status", "--model", "wan2.2"])
+
+    def test_options_are_not_eaten_by_cw(self):
+        """**cw 側でオプションを解釈しない。** 既存の引数がそのまま書けること。"""
+        cw.main(["image", "--negative", "blurry", "a pug"])
+        self.assertEqual(self.script.calls[0][2], ["submit", "--negative", "blurry", "a pug"])
+
+    def test_unknown_command_is_rejected(self):
+        with mock.patch("builtins.print") as out:
+            self.assertEqual(cw.main(["genrate"]), 2)
+        self.assertIn("知らないコマンド", out.call_args_list[0][0][0])
+
+    def test_the_double_dash_survives(self):
+        """**`cw run ... -- <作業>` の `--` を落とさないこと。** argparse に通すと
+        最初の `--` が消え、colab_run.sh が作業をオプションと読んで落ちる。"""
+        sh = Recorder()
+        with mock.patch.object(cw, "_sh", sh):
+            cw.main(["run", "--setup", "video", "--", "src/scripts/generate_video.py"])
+        self.assertEqual(
+            sh.calls,
+            [("colab_run.sh", "--setup", "video", "--", "src/scripts/generate_video.py")],
+        )
+
+    def test_no_command_prints_usage(self):
+        with mock.patch("builtins.print") as out:
+            self.assertEqual(cw.main([]), 0)
+        self.assertIn("cw image", out.call_args[0][0])
+
+
+class JobsTest(unittest.TestCase):
+    def test_collects_stills_and_skips_an_unused_ledger(self):
+        script = Recorder()
+        with TemporaryDirectory() as tmp, \
+             mock.patch.object(cw, "_call_script", script), \
+             mock.patch.object(cw.colab_link, "JOBS_DIR", Path(tmp)), \
+             mock.patch("builtins.print"):
+            cw.main(["jobs"])
+        self.assertEqual([c[0] for c in script.calls], ["generate_image"])
+
+    def test_collects_postprocess_when_it_has_a_ledger(self):
+        script = Recorder()
+        with TemporaryDirectory() as tmp, \
+             mock.patch.object(cw, "_call_script", script), \
+             mock.patch.object(cw.colab_link, "JOBS_DIR", Path(tmp)), \
+             mock.patch("builtins.print"):
+            (Path(tmp) / "postprocess.json").write_text("{}")
+            cw.main(["jobs"])
+        self.assertEqual([c[0] for c in script.calls], ["generate_image", "postprocess"])
+
+
+class OpsTest(unittest.TestCase):
+    """運用系。**docker compose を呼ぶ側に見せない**ことを確かめる。"""
+
+    def setUp(self):
+        self.sh = Recorder()
+        self.docker = Recorder()
+        for name, value in (("_sh", self.sh), ("_docker", self.docker)):
+            patcher = mock.patch.object(cw, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_up_keeps_the_session(self):
+        with mock.patch("builtins.print"):
+            cw.main(["up", "--setup", "image", "--models", "z-image", "--max", "45"])
+        args = self.sh.calls[0]
+        self.assertEqual(args[0], "colab_run.sh")
+        self.assertEqual(args[1:6], ("--setup", "image", "--models", "z-image", "--max"))
+        # 確保したものを残すのが up。実行するものが無いので -- のあとは何もしない
+        self.assertIn("--keep", args)
+        self.assertEqual(args[-3], "--")
+
+    def test_up_refuses_to_take_work(self):
+        with self.assertRaises(SystemExit) as cm:
+            cw.main(["up", "--", "src/scripts/generate_image.py"])
+        self.assertIn("cw run", str(cm.exception))
+
+    def test_run_needs_something_to_run(self):
+        with self.assertRaises(SystemExit):
+            cw.main(["run"])
+
+    def test_stop_checks_the_server_and_folds_the_tunnel(self):
+        """**台帳から消えることと、リモートが止まることは別。** 止めたあと現物を見ること。"""
+        with mock.patch("builtins.print"):
+            cw.main(["stop"])
+        self.assertEqual(
+            [c for c in self.sh.calls],
+            [("colab_watch.sh", "--stop"),
+             ("colab.sh", "stop", "-s", "comfy"),
+             ("colab.sh", "sessions")],
+        )
+        self.assertEqual(self.docker.calls, [("compose", "stop", "tunnel")])
+
+    def test_status_names_the_reason_when_it_cannot_reach(self):
+        """疎通の判定を書き直さない。落ちている理由は colab_link が名指しする。"""
+        boom = cw.colab_link.LinkError("トンネルが切れています")
+        with mock.patch.object(cw.colab_link, "health", side_effect=boom), \
+             mock.patch("builtins.print") as out:
+            self.assertEqual(cw.main(["status"]), 1)
+        printed = " ".join(str(c[0][0]) for c in out.call_args_list if c[0])
+        self.assertIn("トンネルが切れています", printed)
+
+    def test_tunnel_restart_does_not_touch_the_session(self):
+        """セッションが生きていてトンネルだけ落ちた状態で、確保し直させないこと。"""
+        cw.main(["tunnel", "restart"])
+        self.assertEqual(self.docker.calls, [("compose", "restart", "tunnel")])
+        self.assertEqual(self.sh.calls, [])
+
+    def test_tunnel_defaults_to_restart(self):
+        cw.main(["tunnel"])
+        self.assertEqual(self.docker.calls, [("compose", "restart", "tunnel")])
+
+    def test_key_push_sends_the_hashes(self):
+        cw.main(["key", "push"])
+        self.assertEqual(self.sh.calls, [("colab_key.sh", "comfy")])
+
+
+class ModelsTest(unittest.TestCase):
+    CATALOG = [
+        {"id": "ltx-2.5", "kind": "video", "tasks": ["t2v", "i2v"], "last_frame": True,
+         "audio_out": True, "ref_images": 0, "fps": {"default": 24}, "weights_gb": 39.7,
+         "seconds_per_output_second": {"L4": 20.8, "measured": True}, "ready": True},
+        {"id": "z-image", "kind": "image", "ref_images": 0, "weights_gb": 11.3,
+         "seconds_per_image": {"L4": 15.0}, "notes": "8step で速い", "ready": False},
+    ]
+
+    def _render(self, ready_known: bool, argv=()):
+        with mock.patch.object(cw, "_fetch_catalog",
+                               return_value=(self.CATALOG, ready_known, "")), \
+             mock.patch("builtins.print") as out:
+            rc = cw.main(["models", *argv])
+        return rc, "\n".join(str(c[0][0]) for c in out.call_args_list if c[0])
+
+    def test_table_has_both_kinds_and_a_cost(self):
+        rc, text = self._render(True)
+        self.assertEqual(rc, 0)
+        self.assertIn("ltx-2.5", text)
+        self.assertIn("z-image", text)
+        self.assertIn("実測", text)
+        # 20.8秒 x 18.1566円/時 / 3600 = 0.10円
+        self.assertIn("0.10", text)
+
+    def test_ready_is_blank_when_the_runtime_cannot_answer(self):
+        """**カタログはランタイムが無くても答えられること。** 見積もりは確保の前に要る。"""
+        rc, text = self._render(False)
+        self.assertEqual(rc, 0)
+        self.assertIn("ltx-2.5", text)
+        self.assertIn("問い合わせられませんでした", text)
+        row = next(line for line in text.splitlines() if line.startswith("ltx-2.5"))
+        self.assertEqual(row.split()[1], "-")
+
+    def test_ready_is_marked_when_the_runtime_answered(self):
+        _, text = self._render(True)
+        row = next(line for line in text.splitlines() if line.startswith("ltx-2.5"))
+        self.assertEqual(row.split()[1], "○")
+
+    def test_unknown_ready_is_explained(self):
+        """/health は動画ウェイトしか持たない。○ でも × でもない理由を書くこと。"""
+        catalog = [dict(self.CATALOG[1], ready=None)]
+        with mock.patch.object(cw, "_fetch_catalog", return_value=(catalog, True, "")), \
+             mock.patch("builtins.print") as out:
+            cw.main(["models"])
+        text = "\n".join(str(c[0][0]) for c in out.call_args_list if c[0])
+        self.assertIn("静止画モデルの用意", text)
+
+    def test_json_passes_the_entries_through(self):
+        rc, text = self._render(True, ["--json"])
+        self.assertEqual(rc, 0)
+        self.assertIn('"seconds_per_output_second"', text)
+
+
+class TableTest(unittest.TestCase):
+    """日本語の見出しは2桁ぶんの幅を取る。数えないと右の列がずれる。"""
+
+    def test_width_counts_wide_characters_as_two(self):
+        self.assertEqual(cw._width("モデル"), 6)
+        self.assertEqual(cw._width("z-image"), 7)
+
+    def test_pad_fills_to_the_display_width(self):
+        self.assertEqual(cw._width(cw._pad("モデル", 10)), 10)
+
+    def test_columns_line_up(self):
+        text = cw._table(["モデル", "用意"], [["z-image", "○"], ["日本語のモデル", "×"]])
+        offsets = set()
+        for line, cell in zip(text.splitlines(), ("用意", "○", "×"), strict=False):
+            if cell in line:
+                offsets.add(cw._width(line[:line.rindex(cell)]))
+        self.assertEqual(len(offsets), 1)
+
+
+class CallScriptTest(unittest.TestCase):
+    def test_argv_is_restored(self):
+        """cw jobs は2本続けて呼ぶ。sys.argv を戻さないと2本目が壊れる。"""
+        before = list(sys.argv)
+        seen = {}
+
+        module = mock.MagicMock()
+        module.main.side_effect = lambda: seen.update(argv=list(sys.argv)) or 0
+        with mock.patch.object(cw, "_load_script", return_value=module):
+            self.assertEqual(cw._call_script("generate_image", "cw jobs", ["status"]), 0)
+
+        self.assertEqual(seen["argv"], ["cw jobs", "status"])
+        self.assertEqual(sys.argv, before)
+
+    def test_argv_is_restored_after_a_failure(self):
+        module = mock.MagicMock()
+        module.main.side_effect = RuntimeError("boom")
+        before = list(sys.argv)
+        with mock.patch.object(cw, "_load_script", return_value=module):
+            with self.assertRaises(RuntimeError):
+                cw._call_script("generate_image", "cw image", ["submit", "x"])
+        self.assertEqual(sys.argv, before)
+
+
+if __name__ == "__main__":
+    unittest.main()

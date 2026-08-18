@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfy-wrapper"
+version = "0.1.0"
+description = "Colab の GPU 上の ComfyUI へ生成を頼む CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+# 依存はゼロ。生成系は stdlib だけで動くので、入れる側に環境を作らせない
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/loopsketch/comfy-wrapper"
+
+[project.scripts]
+cw = "comfy_wrapper.main:main"
+comfy-wrapper = "comfy_wrapper.main:main"
+
+# ファイルを動かさずに src/cli/ を1つのパッケージとして見せる。自動探索に任せると
+# src/server/ や src/scripts/ (Colab 側で動くもの・単体スクリプト) まで拾ってしまう
+[tool.setuptools]
+packages = ["comfy_wrapper"]
+package-dir = { comfy_wrapper = "src/cli" }
