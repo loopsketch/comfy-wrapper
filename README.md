@@ -74,7 +74,7 @@ the same tunnel on `http://127.0.0.1:8000`. Neither changes between sessions.
 
 | | |
 |---|---|
-| Host | Linux / macOS / WSL2 with Docker and Compose **v2** (`docker compose`, not `docker-compose`). Ports 8000 and 8188 free |
+| Host | Linux / macOS / WSL2 with Docker and Compose **v2** (`docker compose`, not `docker-compose`). Port 8000 free (bound to 127.0.0.1 only) |
 | `cw` | Python **3.11+**, installed with `uv` or `pipx`. The package has no dependencies and does not need ffmpeg (`cw post` reads mp4 headers itself; ffprobe is only used for non-mp4 inputs) |
 | Google account | Colab **compute units are required** — a free account cannot allocate a GPU runtime from the CLI |
 | Browser | Once, for the initial OAuth code paste. It may be a browser on a different machine, so headless hosts are fine |
@@ -629,6 +629,8 @@ equivalent to arbitrary code execution — exposed instances have been targeted 
 cryptomining botnet campaigns. This project therefore keeps ComfyUI bound to `127.0.0.1`
 and exposes only the FastAPI service, behind an SSH tunnel and a bearer key. Do not
 publish port 8188.
+
+Compose publishes a single port, `127.0.0.1:8000`.
 
 Access keys are generated locally and stored in `.colab/comfy-keys.json`; only SHA-256
 hashes are sent to the runtime, so no plaintext key ever exists remotely.
