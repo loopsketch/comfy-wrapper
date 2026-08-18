@@ -32,10 +32,12 @@ works/.rescue/<セッション名>/<ディレクトリ名>/。
 「何も進んでいない」と見なすのは、次のどれでもないとき。
 
 - ディスク(書きかけを含む)が伸びている  … 取得中
+- ディスクが減った                       … 書きかけを捨てて取り直している
 - ComfyUI のキューに積まれている        … 生成中
 - ComfyUI / uvicorn のプロセスがある     … 起動中(H3 は 21GB を積むので数分かかる)
 
-この3つを見ないと、取得直後の ComfyUI 起動待ちなどで誤って止めることになる。
+この4つを見ないと、取得直後の ComfyUI 起動待ちなどで誤って止めることになる。
+**減ったときに基準を取り直さないと、捨てた分を埋め直すまで進捗と見なせない。**
 
 準備できてから最初の1件が来るまでは、手元で produce を叩く時間が要るので許容を長めに
 取る(COLAB_READY_IDLE_MINUTES)。1件でも通ったあとは通常の許容に戻す。
@@ -66,6 +68,8 @@ READY_IDLE_MINUTES = float(os.environ.get("COLAB_READY_IDLE_MINUTES", "15"))
 # 起動待ちで待てる上限。**待つ理由には必ず期限を付ける。**
 BOOT_MINUTES = float(os.environ.get("COLAB_BOOT_MINUTES", "10"))
 INTERVAL = float(os.environ.get("COLAB_WATCH_INTERVAL", "30"))
+# 進捗と見なす最小の増減(GB)。ゆらぎで誤検知しないため
+MOVE_GB = 0.05
 # 認証を確認する間隔。**既定の上限(30分)だと実質「起動直後の1回」になる。**
 # それでも実行前の検査として効くし、--max を長く取った回では周期チェックとして働く
 AUTH_CHECK_MINUTES = float(os.environ.get("COLAB_AUTH_CHECK_MINUTES", "30"))
@@ -324,6 +328,23 @@ def _stop(session: str, reason: str) -> None:
     _set_state("stopped", reason=reason, stop_failed=not stopped)
 
 
+def _disk_move(total: float, last_used: float | None) -> str:
+    """ディスク(書きかけ込み)の動き。"init" / "grew" / "shrank" / "flat" を返す。
+
+    **減ったことを、伸びたことと同じ重さで見る。** 取得の途中で書きかけを捨てると
+    使用量は落ちる。過去の最大だけを基準にすると、捨てた分を埋め直すまで進捗と
+    見なされない。80GB 捨てて 19GB を取り直す回では二度と超えないので、素の HTTP へ
+    切り替えて実際に取れていても自動停止が確定していた。
+    """
+    if last_used is None:
+        return "init"
+    if total > last_used + MOVE_GB:
+        return "grew"
+    if total < last_used - MOVE_GB:
+        return "shrank"
+    return "flat"
+
+
 def main() -> None:
     session = sys.argv[1] if len(sys.argv) > 1 else "comfy"
     started = time.time()
@@ -411,7 +432,17 @@ def main() -> None:
             if queue > 0:
                 served = True
 
-            if last_used is None or total > last_used + 0.05:
+            move = _disk_move(total, last_used)
+            if move == "shrank":
+                # 書きかけを捨てた(取り直し、あるいは Xet から素の HTTP への
+                # 切り替え)。**捨てたのは動いた証拠なので、基準を取り直して
+                # 待ち直す。** 取り直しはファイルごとに数回までなので、
+                # ここで待ち直しても上限時間(MAX_MINUTES)は超えない
+                now = time.time()
+                _log(f"ディスクが減った {last_used:.1f}GB -> {total:.1f}GB "
+                     f"(書きかけを捨てたと見て基準を取り直す。書きかけ {inc:.1f}GB)")
+                last_used, last_move, last_grew_at = total, now, now
+            elif move in ("init", "grew"):
                 now = time.time()
                 if last_used is not None:
                     # 速度の基準は last_move と別にする。last_move は「準備できた」でも
