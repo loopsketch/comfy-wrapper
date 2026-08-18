@@ -649,6 +649,18 @@ class InitTest(unittest.TestCase):
             cw.main(["init", "skills", "--no-h3"])
         self.assertEqual(len(npx.calls), 1)
 
+    def test_without_npx_all_three_are_shown_by_hand(self):
+        """npx が無いときの案内も3つ揃える。H3 だけ手元に無い状態にしない。"""
+        err = io.StringIO()
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError), \
+             mock.patch.object(sys, "stderr", err):
+            self.assertEqual(cw._npx("add", str(cw.REPO)), 127)
+        printed = err.getvalue()
+        self.assertIn("colab-comfy", printed)
+        self.assertIn("ltx-prompt", printed)
+        self.assertIn("h3-prompt-writing", printed)
+        self.assertIn("https://github.com/MiniMax-AI/MiniMax-H3", printed)
+
     def test_a_failed_h3_does_not_hide_that_ours_are_in(self):
         """**黙らせない。** うちの2つが入った状態で公式だけ落ちることがある。"""
         npx = Recorder(rc=1)

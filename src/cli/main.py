@@ -850,8 +850,11 @@ def _npx(*args: str) -> int:
     try:
         return subprocess.run(["npx", "-y", "skills@latest", *args]).returncode
     except FileNotFoundError:
+        # 手で入れる分も3つ揃える。ここで H3 を落とすと、書き方だけ手元に無い状態になる
+        h3_repo, h3_skill = H3_SKILL
         print("npx がありません。Node.js を入れるか、手で入れてください:", file=sys.stderr)
         print(f"  npx skills add {REPO} --skill {' --skill '.join(SKILLS)}", file=sys.stderr)
+        print(f"  npx skills add {h3_repo} --skill {h3_skill}", file=sys.stderr)
         return 127
 
 
