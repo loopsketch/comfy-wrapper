@@ -77,6 +77,12 @@ cw tunnel restart
 docker compose logs --tail 50 tunnel
 ```
 
+構築中の疎通確認は client コンテナから `http://tunnel:8000` を見ている。手元からの
+`http://127.0.0.1:8000` はそれとは別の経路で、食い違うと「準備できた」の直後の1投目が
+`Connection refused` で落ちる (2026-08-17)。`cw up` は返る前に手元から1回叩き、届かなければ
+トンネルだけ張り直してもう一度見る。それでも駄目なら `cw tunnel restart` を案内して終わる。
+**ランタイムは生きているので、`cw up` を打ち直さないこと。**
+
 逆に、セッションが無い状態でトンネルを残すと、ProxyCommand がその名前でランタイムを
 確保してしまう。`cw stop` はトンネルも畳むので、止めるときは `cw stop` を通す。
 

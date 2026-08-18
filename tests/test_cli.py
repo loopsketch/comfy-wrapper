@@ -164,8 +164,19 @@ class OpsTest(unittest.TestCase):
             patcher = mock.patch.object(cw, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # 疎通の待ちはテストでは要らない
+        patcher = mock.patch.object(cw, "REACH_WAIT", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _health(self, *outcomes):
+        """/health の返り方を順に並べる。LinkError なら届かなかった回。"""
+        health = mock.patch.object(cw.colab_link, "health", side_effect=list(outcomes))
+        self.addCleanup(health.stop)
+        return health.start()
 
     def test_up_keeps_the_session(self):
+        self._health({"comfy_ready": True})
         with mock.patch("builtins.print"):
             cw.main(["up", "--setup", "image", "--models", "z-image", "--max", "45"])
         args = self.sh.calls[0]
@@ -174,6 +185,47 @@ class OpsTest(unittest.TestCase):
         # 確保したものを残すのが up。実行するものが無いので -- のあとは何もしない
         self.assertIn("--keep", args)
         self.assertEqual(args[-3], "--")
+
+    def test_up_checks_from_the_host_before_returning(self):
+        """**構築側の確認はコンテナから見ている。** 手元からの経路は返る前に見ること。
+
+        「準備できた」の直後の1投目が Connection refused で落ちた (issue #14)。
+        届いているなら張り直さない。
+        """
+        health = self._health({"comfy_ready": True})
+        with mock.patch("builtins.print"):
+            self.assertEqual(cw.main(["up"]), 0)
+        self.assertEqual(health.call_count, 1)
+        self.assertEqual(health.call_args[0][0], cw.colab_link.read_endpoint())
+        self.assertEqual(self.docker.calls, [])
+
+    def test_up_restrings_the_tunnel_when_the_host_cannot_reach(self):
+        """落ちていたら張り直してから返す。**セッションは触らない。**"""
+        self._health(cw.colab_link.LinkError("接続できません"), {"comfy_ready": True})
+        with mock.patch("builtins.print"):
+            self.assertEqual(cw.main(["up"]), 0)
+        self.assertEqual(self.docker.calls, [("compose", "restart", "tunnel")])
+        self.assertEqual([c[0] for c in self.sh.calls], ["colab_run.sh"])
+
+    def test_up_sends_you_to_tunnel_restart_when_it_cannot_be_fixed(self):
+        """直らないときも確保し直させない。生きているランタイムを捨てることになる。"""
+        boom = cw.colab_link.LinkError("接続できません")
+        self._health(*[boom] * (cw.REACH_TRIES + 1))
+        with mock.patch("builtins.print") as out:
+            self.assertEqual(cw.main(["up"]), 1)
+        printed = " ".join(str(c[0][0]) for c in out.call_args_list if c[0])
+        self.assertIn("cw tunnel restart", printed)
+        self.assertIn("確保し直さないでください", printed)
+        # 生成できるかのように締めない
+        self.assertNotIn("生成できます", printed)
+
+    def test_up_does_not_probe_when_the_setup_failed(self):
+        """構築が落ちた回に疎通の話をしない。理由は colab_run.sh が出している。"""
+        self.sh.rc = 1
+        health = self._health({"comfy_ready": True})
+        with mock.patch("builtins.print"):
+            self.assertEqual(cw.main(["up"]), 1)
+        self.assertEqual(health.call_count, 0)
 
     def test_up_refuses_to_take_work(self):
         with self.assertRaises(SystemExit) as cm:
