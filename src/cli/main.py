@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -311,20 +312,88 @@ def _colab_exec(*args: str) -> int:
     return _colab_run("python", *args)
 
 
+# 張り直したトンネルが通るまでの見張り。ssh は接続に ConnectTimeout=45 を取るので、
+# 1回届かなかっただけでは諦めない
+REACH_TRIES = 9
+REACH_WAIT = 10.0
+# 疎通確認そのものの待ち。詰まった1回でループを食い潰さない長さにする
+REACH_TIMEOUT = 15.0
+
+
+def _unreachable(endpoint: str) -> str | None:
+    """手元から /health を1回引く。届けば None、駄目ならその理由を返す。
+
+    **判定を書き直さない。** 落ちている理由の名指しは colab_link.diagnose() が持つ。
+    """
+    try:
+        colab_link.health(endpoint, timeout=REACH_TIMEOUT)
+    except colab_link.LinkError as exc:
+        return str(exc)
+    return None
+
+
+def _ensure_reachable() -> int:
+    """手元から届くことを確かめ、届かなければトンネルだけ張り直す。
+
+    構築中の疎通確認は client コンテナから (http://tunnel:8000) 見ている。手元からの
+    経路 (127.0.0.1:8000) はそれとは別で、食い違うと **15分待った末の1投目で転ぶ**。
+    返る前にここで1回確かめる。
+
+    **直せなくても確保し直させない。** セッションは生きているので、捨てるともう一度
+    GPU を掴むことになる。
+    """
+    endpoint = colab_link.read_endpoint()
+    _section(f"手元から疎通を確かめます ({endpoint})")
+    reason = _unreachable(endpoint)
+    if reason is None:
+        print("届いています")
+        return 0
+
+    print(reason)
+    print("\nトンネルを張り直します (セッションは触りません)")
+    if cmd_tunnel(["restart"]) != 0:
+        print("張り直せませんでした (docker compose restart tunnel)")
+    else:
+        for i in range(1, REACH_TRIES + 1):
+            time.sleep(REACH_WAIT)
+            reason = _unreachable(endpoint)
+            if reason is None:
+                print("届きました")
+                return 0
+            # 黙って待たない。まだ上がりきらないのか、落ちたままなのかを切り分ける
+            if i % 3 == 0:
+                print(f"  待っています ({i}/{REACH_TRIES}): {reason}")
+
+    print(f"\n張り直しても手元から届きません: {reason}")
+    print("**ランタイムは生きています。確保し直さないでください** "
+          "(cw up を打ち直すと、生きているものを捨てて GPU を取り直すことになります)")
+    print("  cw tunnel restart    もう一度張り直す")
+    print("  cw tunnel logs       ssh が何を言っているか見る")
+    print("  cw status            セッションと疎通をまとめて見る")
+    return 1
+
+
 def cmd_up(argv: list[str]) -> int:
     """確保 -> 構築 -> トンネルまでを流して、セッションを残す。
 
     中身は colab_run.sh そのもの。**判定も待ちもここで書き直さない。** 実行する
     ものが無いので、-- のあとには何もしない python を渡す。
+
+    最後に手元からの疎通だけを見る。構築側の確認はコンテナから見ているので、
+    ホストからの経路が落ちていても「準備できた」で返ってしまう。
     """
     if "--" in argv:
         raise SystemExit("cw up は作業を取りません。まとめて1本流すなら cw run を使ってください")
     rc = _sh("colab_run.sh", *argv, "--keep", "--",
              "-c", "print('生成を受け付けられます')")
-    if rc == 0:
-        print("\n生成できます:  cw image \"...\" --out ./a.png")
-        print("止めるとき  :  cw stop      **GPU は稼働時間で課金されます**")
-    return rc
+    if rc != 0:
+        return rc
+    rc = _ensure_reachable()
+    if rc != 0:
+        return rc
+    print("\n生成できます:  cw image \"...\" --out ./a.png")
+    print("止めるとき  :  cw stop      **GPU は稼働時間で課金されます**")
+    return 0
 
 
 def cmd_run(argv: list[str]) -> int:
