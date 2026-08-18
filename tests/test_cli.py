@@ -25,7 +25,7 @@ class Recorder:
         self.calls: list[tuple] = []
         self.rc = rc
 
-    def __call__(self, *args):
+    def __call__(self, *args, **kwargs):
         self.calls.append(args)
         return self.rc
 
@@ -201,6 +201,58 @@ class OpsTest(unittest.TestCase):
     def test_key_push_sends_the_hashes(self):
         cw.main(["key", "push"])
         self.assertEqual(self.sh.calls, [("colab_key.sh", "comfy")])
+
+
+class AuthTest(unittest.TestCase):
+    """認証。**呼ぶ側に `colab` コマンドも compose も見せない**ことを確かめる。
+
+    colab-cli の再認証は `input()` で標準入力を待つので、そこへ落ちると人が対話端末に
+    入るまで止まる。URL を出す側とコードを渡す側が別のコマンドになっていること、
+    通ったあとに現物を問い合わせていることを見る。
+    """
+
+    SCRIPT = "/app/src/scripts/colab_auth.py"
+
+    def setUp(self):
+        self.exec = Recorder()
+        self.sh = Recorder()
+        for name, value in (("_colab_exec", self.exec), ("_sh", self.sh)):
+            patcher = mock.patch.object(cw, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch("builtins.print")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_bare_auth_just_checks(self):
+        cw.main(["auth"])
+        self.assertEqual(self.exec.calls, [(self.SCRIPT,)])
+
+    def test_check_flags_pass_through(self):
+        cw.main(["auth", "--force", "--json"])
+        self.assertEqual(self.exec.calls, [(self.SCRIPT, "--force", "--json")])
+
+    def test_login_asks_for_the_url_only(self):
+        """URL を出す段でトークンを触らない。ここは人がブラウザへ行くだけ。"""
+        cw.main(["auth", "login"])
+        self.assertEqual(self.exec.calls, [(self.SCRIPT, "login", "--url")])
+        self.assertEqual(self.sh.calls, [])
+
+    def test_login_with_a_code_is_not_interactive(self):
+        cw.main(["auth", "login", "--code", "4/0AX-code"])
+        self.assertEqual(
+            self.exec.calls, [(self.SCRIPT, "login", "--code", "4/0AX-code")]
+        )
+
+    def test_a_fresh_login_looks_for_leftover_runtimes(self):
+        """**切れている間は問い合わせができない。** 止めたつもりのものが動いている。"""
+        cw.main(["auth", "login", "--code", "4/0AX-code"])
+        self.assertEqual(self.sh.calls, [("colab.sh", "sessions")])
+
+    def test_a_failed_login_does_not_claim_to_have_checked(self):
+        self.exec.rc = 3
+        self.assertEqual(cw.main(["auth", "login", "--code", "bad"]), 3)
+        self.assertEqual(self.sh.calls, [])
 
 
 class ModelsTest(unittest.TestCase):

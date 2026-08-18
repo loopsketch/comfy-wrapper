@@ -95,7 +95,8 @@ cw --help
 
 ```bash
 docker compose up -d colab                  # 常駐させる(理由は下記)
-docker compose exec colab colab sessions    # 認証。URL をブラウザで開きコードを貼る
+cw auth login                               # 認可 URL が出る
+cw auth login --code <ブラウザに出たコード>  # 認証を通す
 
 docker compose exec colab mkdir -p /app/.colab/.ssh
 docker compose exec colab ssh-keygen \

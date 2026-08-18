@@ -101,7 +101,8 @@ the repository, point `COMFY_WRAPPER_HOME` at it.
 
 ```bash
 docker compose up -d colab                  # must stay running (see note below)
-docker compose exec colab colab sessions    # opens an auth URL; paste the code back
+cw auth login                               # prints an authorization URL
+cw auth login --code <code from browser>    # completes the login
 
 docker compose exec colab mkdir -p /app/.colab/.ssh
 docker compose exec colab ssh-keygen \
