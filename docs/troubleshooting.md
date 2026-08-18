@@ -18,6 +18,7 @@ cw sessions    # サーバに現物を問い合わせる
 | 400 `value_not_in_list` | 構築したモデルと `--model` がずれている |
 | 生成中に CUDA out of memory | `megapixels` と `duration` を下げる。`upscale_model` を外す |
 | `cw sessions` に `[?]` が残る | 管理から外れた孤児。`cw stop --orphans` |
+| 落ちた理由が知りたい | **止める前に** `cw logs setup` / `api` / `comfyui`。止めると `/content` ごと消える |
 
 ## 確保したのに CPU ランタイムだった
 
@@ -66,6 +67,22 @@ docker compose exec -T colab python \
 
 名前つきも含めてすべて外す `--all` もあるが、走っている GPU セッションまで巻き添えに
 なる。生成中に使わないこと。放っておくと GPU の場合は課金が続く。
+
+## 落ちた理由を止める前に読む
+
+ランタイムを止めると `/content` は消える。**その回に分かったことは、その回の中にしか無い。**
+
+```bash
+cw logs                    # 置いてあるログを並べる
+cw logs setup --tail 100   # 末尾を読む
+cw logs --save             # 全文を works/.rescue/<セッション>/logs/ へ落とす
+```
+
+`cw stop` は畳む前に3本を自動で回収する (`--no-logs` で飛ばせる)。監視が自分の判断で
+止めるときも同じ場所へ回収する。
+
+監視は30秒ごとに同じ `colab exec` を使うので、手で叩いた分が重なると返りが遅くなる。
+返らなかったときはその旨が出るので、少し置いてからもう一度。**ループで回さないこと。**
 
 ## トンネルだけが落ちた
 
