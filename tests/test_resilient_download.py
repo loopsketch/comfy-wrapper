@@ -26,6 +26,10 @@ def _hang(*args):
     time.sleep(3600)
 
 
+def _hang_child(repo, filename, local_dir, disable_xet, q):
+    _hang()
+
+
 def _succeed(repo, filename, local_dir, disable_xet, q):
     q.put(("ok", f"/fake/{filename}"))
 
@@ -114,6 +118,50 @@ class ResilientDownloadTest(unittest.TestCase):
 
         got = rd.download("repo", "f", watch_roots=[str(root)], log=lambda *_: None)
         self.assertEqual(got, "/fake/done")
+
+    def test_describe_partials_shows_each_file_not_just_the_total(self):
+        """再開が効いているかは本数で分かる。合計だけでは読み違える。"""
+        d = self.tmp / "cache" / "download"
+        d.mkdir(parents=True)
+        (d / "a.incomplete").write_bytes(b"x" * 3000)
+        (d / "b.incomplete").write_bytes(b"y" * 1000)
+
+        text = rd.describe_partials([str(self.tmp / "cache")])
+        self.assertIn("2本", text)
+        self.assertIn("a.incomplete", text)
+        self.assertIn("b.incomplete", text)
+        self.assertEqual(rd.describe_partials([str(self.tmp / "nope")]), "書きかけ なし")
+
+    def test_free_gb_walks_up_to_an_existing_parent(self):
+        """取得中はまだ無いディレクトリを指すことがある。落ちずに親を見る。"""
+        self.assertIsNotNone(rd.free_gb(self.tmp / "not" / "made" / "yet"))
+
+    def test_aborts_when_the_disk_is_nearly_full(self):
+        """空きが尽きる前に打ち切る。取れないまま GPU 時間を使い続けないため。
+
+        書きかけが積み上がって空きを食い潰す形(#13)。取り直しを重ねるより、
+        理由を書いて止める方が安い。
+        """
+        self.enterContext(patch.object(rd, "_child", _hang_child))
+        self.enterContext(patch.object(rd, "ATTEMPTS", 3))
+        self.enterContext(patch.object(rd, "free_gb", lambda _: 1.0))
+        self.enterContext(patch.object(rd, "MIN_FREE_GB", 5.0))
+
+        said = []
+        with self.assertRaisesRegex(RuntimeError, "空きが"):
+            rd.download("repo", "big.safetensors", watch_roots=[str(self.tmp)],
+                        log=said.append)
+        # 1回目で打ち切る。取り直しに入らない
+        self.assertEqual(sum(1 for line in said if line.startswith("[開始]")), 1)
+
+    def test_keeps_going_while_the_disk_has_room(self):
+        """空きがあるうちは打ち切らない。ガードで正常な取得を殺さない。"""
+        self.enterContext(patch.object(rd, "_child", _succeed))
+        self.enterContext(patch.object(rd, "free_gb", lambda _: 50.0))
+        self.enterContext(patch.object(rd, "MIN_FREE_GB", 5.0))
+
+        got = rd.download("repo", "f", watch_roots=[str(self.tmp)], log=lambda *_: None)
+        self.assertEqual(got, "/fake/f")
 
     def test_gives_up_after_all_attempts(self):
         self.enterContext(patch.object(rd, "_child", _fail))
