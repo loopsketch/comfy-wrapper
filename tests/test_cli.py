@@ -7,6 +7,7 @@ compose のサービス名・コンテナ内のパスが漏れていないこと
 
 from __future__ import annotations
 
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -179,6 +180,15 @@ class OpsTest(unittest.TestCase):
         )
         self.assertEqual(self.docker.calls, [("compose", "stop", "tunnel")])
 
+    def test_stop_releases_orphans_only_when_asked(self):
+        """名前の無い割り当ては stop -s では引けない。**明示したときだけ解放する。**"""
+        exec_ = Recorder()
+        with mock.patch.object(cw, "_colab_exec", exec_), mock.patch("builtins.print"):
+            cw.main(["stop"])
+            self.assertEqual(exec_.calls, [])
+            cw.main(["stop", "--orphans"])
+        self.assertEqual(exec_.calls, [("/app/src/scripts/colab_unassign.py",)])
+
     def test_status_names_the_reason_when_it_cannot_reach(self):
         """疎通の判定を書き直さない。落ちている理由は colab_link が名指しする。"""
         boom = cw.colab_link.LinkError("トンネルが切れています")
@@ -326,6 +336,114 @@ class TableTest(unittest.TestCase):
             if cell in line:
                 offsets.add(cw._width(line[:line.rindex(cell)]))
         self.assertEqual(len(offsets), 1)
+
+
+class InitTest(unittest.TestCase):
+    """初回の用意。**鍵とトークンの置き場を呼ぶ側に覚えさせない**ことを確かめる。"""
+
+    def test_status_names_what_is_missing_and_fails(self):
+        with TemporaryDirectory() as tmp:
+            colab = Path(tmp) / ".colab"
+            with mock.patch.object(cw, "SSH_KEY", colab / ".ssh" / "id_ed25519"), \
+                 mock.patch.object(cw, "HF_TOKEN", colab / "hf-token"), \
+                 mock.patch.object(cw.colab_link, "COLAB_DIR", colab), \
+                 mock.patch.object(cw.colab_link, "API_KEY_FILE", colab / "colab-api-key"), \
+                 mock.patch.object(cw.colab_link, "LEGACY_API_KEY_FILE", colab / "h3-api-key"), \
+                 mock.patch.object(cw.colab_link, "AUTH_STATE", colab / "auth-state.json"), \
+                 mock.patch("builtins.print") as out:
+                # 揃っていなければ 0 を返さない。無人の手順から気づけるようにする
+                self.assertEqual(cw.main(["init"]), 1)
+        printed = " ".join(str(c[0][0]) for c in out.call_args_list if c[0])
+        self.assertIn("cw init ssh", printed)
+        self.assertIn("cw key issue", printed)
+
+    def test_hf_token_is_saved_600_and_never_printed(self):
+        with TemporaryDirectory() as tmp:
+            token = Path(tmp) / ".colab" / "hf-token"
+            with mock.patch.object(cw, "HF_TOKEN", token), \
+                 mock.patch("builtins.print") as out:
+                self.assertEqual(cw.main(["init", "hf", "--token", "hf_secret"]), 0)
+            self.assertEqual(token.read_text().strip(), "hf_secret")
+            self.assertEqual(token.stat().st_mode & 0o777, 0o600)
+        printed = " ".join(str(c[0][0]) for c in out.call_args_list if c[0])
+        self.assertNotIn("hf_secret", printed)
+
+    def test_hf_token_is_read_from_stdin(self):
+        with TemporaryDirectory() as tmp:
+            token = Path(tmp) / ".colab" / "hf-token"
+            with mock.patch.object(cw, "HF_TOKEN", token), \
+                 mock.patch.object(cw.sys, "stdin", io.StringIO("hf_piped\n")), \
+                 mock.patch("builtins.print"):
+                self.assertEqual(cw.main(["init", "hf"]), 0)
+            self.assertEqual(token.read_text().strip(), "hf_piped")
+
+    def test_hf_rejects_an_empty_token(self):
+        with TemporaryDirectory() as tmp:
+            token = Path(tmp) / ".colab" / "hf-token"
+            with mock.patch.object(cw, "HF_TOKEN", token):
+                with self.assertRaises(SystemExit):
+                    cw.main(["init", "hf", "--token", "  "])
+            self.assertFalse(token.exists())
+
+    def test_skills_come_from_the_clone_not_github(self):
+        """**CLI とスキルの版をずらさない。** 入れ先は clone、GitHub ではない。"""
+        npx = Recorder()
+        with mock.patch.object(cw, "_npx", npx):
+            self.assertEqual(cw.main(["init", "skills"]), 0)
+        args = npx.calls[0]
+        self.assertEqual(args[:2], ("add", str(cw.REPO)))
+        self.assertIn("colab-comfy", args)
+        self.assertIn("ltx-prompt", args)
+        # 既定は呼ぶ側のプロジェクト。黙って ~/.claude を触らない
+        self.assertIn("-p", args)
+        self.assertNotIn("-g", args)
+
+    def test_skills_scope_is_chosen_explicitly(self):
+        npx = Recorder()
+        with mock.patch.object(cw, "_npx", npx):
+            cw.main(["init", "skills", "--global"])
+            cw.main(["init", "skills", "--project"])
+        self.assertIn("-g", npx.calls[0])
+        self.assertNotIn("-p", npx.calls[0])
+        self.assertIn("-p", npx.calls[1])
+
+    def test_skills_scope_flags_cannot_be_combined(self):
+        with self.assertRaises(SystemExit):
+            cw.main(["init", "skills", "--project", "--global"])
+
+    def test_h3_is_fetched_from_the_official_repository(self):
+        """H3 の書き方は MiniMax 公式に譲った。こちらから配らない。"""
+        npx = Recorder()
+        with mock.patch.object(cw, "_npx", npx), mock.patch("builtins.print"):
+            cw.main(["init", "skills", "--h3"])
+        self.assertEqual(len(npx.calls), 2)
+        self.assertIn("https://github.com/MiniMax-AI/MiniMax-H3", npx.calls[1])
+        self.assertIn("h3-prompt-writing", npx.calls[1])
+
+    def test_ssh_keeps_an_existing_key(self):
+        """**作り直すと張り直しになる。** 黙って上書きしないこと。"""
+        run = Recorder()
+        with TemporaryDirectory() as tmp:
+            key = Path(tmp) / "id_ed25519"
+            key.write_text("existing")
+            with mock.patch.object(cw, "SSH_KEY", key), \
+                 mock.patch.object(cw, "_colab_run", run), \
+                 mock.patch("builtins.print"):
+                self.assertEqual(cw.main(["init", "ssh"]), 0)
+            self.assertEqual(key.read_text(), "existing")
+        self.assertEqual(run.calls, [])
+
+    def test_ssh_generates_in_the_container(self):
+        """鍵は colab コンテナで作る。呼ぶ側にコンテナ内のパスを書かせない。"""
+        run = Recorder()
+        with TemporaryDirectory() as tmp:
+            with mock.patch.object(cw, "SSH_KEY", Path(tmp) / "id_ed25519"), \
+                 mock.patch.object(cw, "_colab_run", run), \
+                 mock.patch("builtins.print"):
+                self.assertEqual(cw.main(["init", "ssh"]), 0)
+        command = " ".join(run.calls[0])
+        self.assertIn("ssh-keygen -t ed25519", command)
+        self.assertIn("/app/.colab/.ssh/id_ed25519", command)
 
 
 class CallScriptTest(unittest.TestCase):

@@ -98,13 +98,17 @@ docker compose up -d colab                  # 常駐させる(理由は下記)
 cw auth login                               # 認可 URL が出る
 cw auth login --code <ブラウザに出たコード>  # 認証を通す
 
-docker compose exec colab mkdir -p /app/.colab/.ssh
-docker compose exec colab ssh-keygen \
-  -t ed25519 -N "" -C "comfy-wrapper" -f /app/.colab/.ssh/id_ed25519
+cw init ssh                                 # SSH 鍵を作る (ed25519)
+cw init hf < token.txt                      # Hugging Face のトークンを置く(--token でも可)
+cw init                                     # 足りないものを一覧する
 ```
 
 トークンと鍵は `.colab/`(git 管理外)に残ります。`colab` コンテナが 30分おきに
 OAuth トークンを延長するので、人が要るのは初回だけです。
+
+`cw init` は置き場とコンテナ内のパスを覚えなくて済むようにするためのものです。
+`cw init ssh` は鍵が既にあれば何もしません(作り直すとトンネルを張り直すことになります)。
+HF トークンは任意ですが実質必須で、`cw init` は無い場合に警告します。
 
 > `colab` サービスは常駐させてください。`colab new` は keep-alive デーモンを detached な
 > 子プロセスとして起こすため、`docker compose run --rm` で叩くとコマンド終了でコンテナごと
@@ -162,6 +166,10 @@ cw stop
 台帳から消えることとリモートが止まることは別なので、最後に現物を出します。
 GPU の稼働時間で課金されるので、止まっていることを必ず確かめてください。
 
+最後の一覧に `[?]` で始まる名前なしのものが残っていたら、台帳から外れた割り当てです。
+`cw stop -s <名前>` では引けないので `cw stop --orphans` で解放してください
+(中身は `src/scripts/colab_unassign.py`。名前つきも含めて畳むなら `--all`)。
+
 **`tunnel` を上げっぱなしにしない。** セッションが無い状態で常駐させると、
 ProxyCommand の `colab ssh -s comfy` がその名前のランタイムを確保します(実測では
 CPU ランタイムなのでコンピューティングユニットは減りませんが、意図しない確保です)。
@@ -208,14 +216,39 @@ docker compose run --rm client src/scripts/generate_video.py --first-frame works
 
 ## Claude Code から使う
 
-`.claude/skills/` にスキルを2つ置いてあります(git 管理下・共有対象)。
-`.claude/settings.json` は個人設定なので git 管理外です。
+スキルは `cw` を前提に書いてあるので、**どのプロジェクトからでもそのまま使えます**。
+`cw` を入れて、使いたいスキルを入れてください。
+
+```bash
+uv tool install --editable /path/to/comfy-wrapper
+
+cd /path/to/your-project
+cw init skills          # このプロジェクトへ入れる (--global で ~/.claude へ)
+cw init skills --h3     # MiniMax 公式の h3-prompt-writing も入れる
+```
+
+`cw init skills` は clone から入れます(GitHub を経由しません)。手元の `cw` と同じ
+ソースツリーから入るので、CLI とスキルの版がずれません。中身は
+[skills CLI](https://github.com/vercel-labs/skills) なので、手で叩いても同じです。
+
+```bash
+npx skills add /path/to/comfy-wrapper --skill colab-comfy --skill ltx-prompt
+npx skills add https://github.com/loopsketch/comfy-wrapper --skill colab-comfy
+npx skills add https://github.com/MiniMax-AI/MiniMax-H3 --skill h3-prompt-writing
+```
 
 - **`colab-comfy`** — 動かす側。「画像を作って」「この静止画を動かして」と頼むと、
   状態の確認 → 確保 → 構築 → 生成 → 停止 の手順と、課金を止めるための鉄則を持っています。
-- **`h3-prompt`** — MiniMax H3 に書く側。公式の記法(タスク選択、ショットとカメラの語彙、
-  台詞・歌唱の `<d>`、参照ラベル、音の2フィールド)。H3 はこの形式で学習しているので、
-  外すとカメラ指示やリップシンクが効かなくなります。
+  モデルの一覧は写さず `cw models` を引くので、モデルが増えても古くなりません。
+- **`ltx-prompt`** — LTX-2.5 に書く側。散文での書き方、多ショットのつなぎ方、
+  8k+1 のグリッド、効かない書き方。
+- **`h3-prompt-writing`** — MiniMax H3 に書く側は
+  [公式スキル](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills)に譲りました。
+  このラッパ固有の分(尺のグリッド、タスクとコマンドの対応、`r2v` に要るウェイト)は
+  `colab-comfy` が持っています。
+
+このリポジトリの `.claude/skills/` は配布元そのものなので、ここで作業するときは
+入れ直さなくてもそのまま読まれます(`.claude/settings.json` は個人設定なので git 管理外)。
 
 ## 自前のコードから呼ぶ
 
@@ -491,7 +524,7 @@ GPU も Colab のランタイムもネットワークも要りません。**課�
 pyproject.toml         cw / comfy-wrapper のパッケージ定義(依存ゼロ)
 docker-compose.yml     client / colab / tunnel の3サービス
 docker/                各サービスのイメージ
-.claude/skills/        Claude Code 用のスキル(colab-comfy: 運用 / h3-prompt: H3 の記法)
+.claude/skills/        Claude Code 用のスキル(colab-comfy: 運用 / ltx-prompt: LTX の記法)
 src/
   cli/                 cw の振り分け(comfy_wrapper として入る)
   server/              Colab 上で動く FastAPI + ComfyUI 橋渡し

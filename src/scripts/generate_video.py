@@ -64,6 +64,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path, help="既定は CWD に日時つきで書く")
     parser.add_argument("--model", help="省略時はサーバの既定 (minimax-h3)")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
+    parser.add_argument("--negative", help="省略時はモデルの既定 (LTX はアニメ調を打ち消す)")
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--aspect", default="16x9")
     parser.add_argument("--megapixels", type=float, default=0.4)
@@ -89,6 +90,8 @@ def main() -> int:
     }
     if args.model:
         body["model"] = args.model
+    if args.negative is not None:
+        body["negative"] = args.negative
     if args.first_frame:
         body["first_frame"] = base64.b64encode(args.first_frame.read_bytes()).decode()
     if args.last_frame:

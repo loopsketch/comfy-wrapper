@@ -1,205 +1,297 @@
 ---
 name: colab-comfy
-description: Colab の GPU 上の ComfyUI で画像や動画を生成する。「画像を作って」「この静止画を動かして」「参照画像から生成して」など、このリポジトリのラッパ経由で生成するときに使う。ランタイムの確保・構築・生成・停止の手順と、課金を止めるための鉄則が入っている。
+description: Colab の GPU 上の ComfyUI で画像や動画を生成するための環境の活用方法。「画像を作って」「この静止画を動かして」「参照画像から生成して」など、cw コマンド経由で生成するときに使う。ランタイムの確保・構築・生成・停止の手順と、課金を止めるための鉄則が入っている。
 ---
 
 # Colab で画像・動画を生成する
 
-Colab のランタイムを確保して ComfyUI を立て、手元から HTTP API で生成する。
-仕組みの説明は [README.ja.md](../../../README.ja.md)。ここは手順と判断だけ。
+comfy-wrapper は、Colab 上に ComfyUI 環境を構築し、ローカル環境から生成を依頼するための
+ツールである。操作はすべて `cw` CLI コマンドで行い、生成物は `--out` で指定した場所に
+出力できる。どのプロジェクトの中からでもそのまま叩ける。
+
+
+## 前提
+
+- `cw` CLI がインストールされていること
+  - `cw --help` が通らなければ入れる
+
+    ```bash
+    git clone https://github.com/loopsketch/comfy-wrapper   # まだ無ければ
+    uv tool install --editable /path/to/comfy-wrapper       # pipx install -e . でも入る
+    ```
+
+- Docker と Compose プラグイン
+  - ランタイムの確保と停止で内部的に使う
+- Colab のコンピューティングユニット
+  - 無料枠では GPU ランタイムを確保できないので、課金枠の Colab Pro / Pro+ が要る
+
 
 ## 鉄則
 
-- **GPU は稼働時間で課金される。** 確保したら必ず止める。止め忘れは寝ている間も課金が続く。
-- **確保の前にユーザーへ確認する。** `cw up` / `cw run` は課金の始まりなので、
-  GPU の種類と上限時間を伝えてから実行する。生成そのものの繰り返しは確認不要。
-- **人待ちを作らない。** 確保してから「次どうしますか」と聞いている間も課金される。
-  何をどこまでやるかは確保の前に決めておく。
-- **見張りを必ず動かす。** `cw up` / `cw run` は自動で始める。手で `colab.sh new` した
-  ときは `cw watch <セッション> <上限分>` で自分で始めること。
-- **投入を安易にリトライしない。** 202 が返っていれば生成は走っている。投げ直すと
-  GPU 時間をそのまま捨てる。
-- **構築したモデルと、生成で指定するモデルを必ず一致させる。** `--models` で入れたのは
-  1モデルだけで、`cw image` の既定は `z-image`。ずれると ComfyUI が
-  `value_not_in_list` (400) で弾く(2026-08-12 に踏んだ)。**`--model` は毎回明示する。**
+- GPU は稼働時間で課金される
+  - 確保したら必ず止める。止め忘れは寝ている間も課金が続く
+  - 手で確保したときは `cw watch` で監視も始める
+- 確保の前にユーザーへ確認する
+  - `cw up` と `cw run` は課金の始まりなので、GPU の種類と上限時間を伝えてから実行する
+  - 確保してから「次どうしますか」と聞いている間も課金される。どこまでやるかは先に決める
+- 投入を安易にリトライしない
+  - 202 が返っていれば生成は走っている。投げ直すと GPU 時間をそのまま捨てる
+- 構築したモデルと `--model` を一致させる
+  - `--models` で入れたのは1モデルだけで、`cw image` の既定は `z-image`
+  - ずれると ComfyUI が `value_not_in_list` (400) で弾く (2026-08-12 に踏んだ)
 
-## 0. いまの状態を見る
 
-生成を頼まれたら、まずここから。すでにセッションがあれば確保は要らない。
+## 主な利用フロー
+comfy-wrapperを使った画像・動画コンテンツの生成は、次の5ステップで行います。
+0はインストール直後の初回のみで、通常は、1以降のステップを順に実行する。
+
+0. 初期化(インストール直後の初回のみ)
+1. セッションの状態を確認
+2. 認証、監視
+3. ランタイムの確保と環境構築
+4. 画像・動画コンテンツの生成
+
+
+## コマンドリファレンス
+
+### 初期化 (`cw init`)
+
+SSH 鍵と Hugging Face のトークンを clone 先の `.colab/` に置く。引数なしで叩くと、
+初期化が不足しているものと、それを埋めるコマンドが出力される。
 
 ```bash
-cw status     # compose / セッション / 見張り / 疎通 を1画面で
+cw init                    # 何が足りないかを確認
+cw init ssh                # SSH 鍵を作る (ed25519)
+cw init hf < token.txt     # HF トークンを保存する (--token でも渡せる)
+cw init skills             # このスキルを別のプロジェクトへ入れる (--global もある)
 ```
 
-`cw` が無ければ同じものを個別に見る。
+- 鍵は作り直さない
+  - `cw init ssh` は既にあれば何もしない。作り直すとトンネルを張り直すことになる
+- HF トークンは無くても動く
+  - ただしウェイトの取得が大きく絞られ、その待ち時間はそのまま GPU の課金になる
+
+### セッションの状態を確認 (`cw status` / `cw sessions`)
+
+生成を依頼されたら、まずここから。すでにセッションがあれば確保は要らない。
 
 ```bash
-docker compose ps                      # colab / tunnel が動いているか
-src/scripts/colab.sh sessions          # サーバーに問い合わせる(ローカルの記録ではない)
-src/scripts/colab_watch.sh --status    # 見張りと keep-alive の生存
+cw status     # 宛先、セッション、監視、疎通を1画面で
+cw sessions   # サーバーに問い合わせる (ローカルの記録ではない)
 ```
 
-`colab` コンテナが動いていなければ `docker compose up -d colab`。
-認証が切れていたら **URL を出してユーザーに開いてもらう**。対話端末は要らないので、
-返ってきたコードをこちらで渡せる。
+### 認証する (`cw auth`)
+
+Colabの認証が切れていたら 認証用の URL を取得し、利用者に渡してブラウザで認証してもらう必要がある。取得したコードを伝えてもらい、コマンドで設定する。初回もこの手順で通す。
 
 ```bash
 cw auth                              # 状態を見る (期限が近ければ延長する)
-cw auth login                        # 切れていたら: 認可 URL を出してユーザーに渡す
+cw auth login                        # 切れていたら認可 URL を出してユーザーに渡す
 cw auth login --code <返ってきたコード>  # 通す。そのままセッションの残りも確認する
 ```
 
-## 1. セッションが無いとき: 確保して構築する
+### ランタイムを確保して環境構築する (`cw up`)
 
-続けて何枚も生成するなら `cw up` で確保して構築する(**セッションは残るので、
-止める責任がこちらに残る**。手順は 3)。
+続けて何枚も生成するときに使う。セッションは残るので、止める責任がこちらに残る。
 
 ```bash
-# 画像(Qwen-Image-Edit / Z-Image / Qwen-Image)
-# --models と、あとで使う --model は同じものにする。ずれると 400 で弾かれる
+# 画像。--models と、あとで使う --model は同じものにする
 cw up --setup image --models qwen-image-edit --gpu L4 --max 60
 
-# 動画(Wan2.2 / LTX)
+# 動画
 cw up --setup video --models ltx-2.5 --gpu L4 --max 90
+
+# MiniMax H3。参照つき生成 (r2v) を使うなら ref2va のウェイト (+21GB) も要る
+cw up --setup h3 --models "fl2va ref2va" --gpu L4 --max 90
 ```
 
-1本だけ流して確実に止めたいときは `cw run`。確保 → 構築 → 実行 → 停止 を1本で流し、
-**何が起きても最後に止める**。`--` のあとは client コンテナのパスで書く。
+- `--max` は監視の上限分
+  - 超えると監視がランタイムを強制的に止める
+  - 構築に 15〜25分かかるので、生成の時間を足して決める
+- 構築の 15〜25分は Bash ツールの上限を超える
+  - `run_in_background: true` で流し、進捗は `cw status` で見る
+- `--gpu L4` を渡しても CPU ランタイムが返ることがある
+  - 確保直後に `cw sessions` で `Hardware: L4 | Variant: GPU` を確認する
+
+### 1本流して必ず止める (`cw run`)
+
+ランタイム確保、環境構築、処理実行、停止を連続して行い、完了後はランタイムを停止させる。
+`--` のあとだけは clone先のスクリプトを書く。
 
 ```bash
 cw run --setup video --models ltx-2.5 --gpu L4 --max 90 -- \
   src/scripts/measure_video.py submit works/still.png --model ltx-2.5 --aspect 9x16
 ```
 
-- `--max` は見張りの上限分。ここを超えると見張りが強制的に止める。構築に 15〜25分
-  かかるので、生成の時間を足して決める。
-- 構築は **15〜25分かかる**。Bash ツールの上限を超えるので `run_in_background: true` で
-  流し、進捗は下で見る。
+### 監視する (`cw watch`)
+
+`cw up` と `cw run` を行った際は自動で監視が行われるが、確認したい時や、手動で確保したときだけ使う。
 
 ```bash
-tail -20 .colab/keepalive-watch.log
-src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup_status.py
+cw watch <セッション> <上限分>   # 開始
+cw watch --status               # 生存を見る
+cw watch --stop                 # 止める
 ```
 
-**`.colab/keepalive-watch.log` の日本語を grep して判断しない。** 起動行の
-「アイドル 8分で自動停止」を停止と読み違える。機械可読な状態は
-`.colab/watch-state.json` の `state`(`building` / `ready` / `stopped`)。
+### 画像を生成する (`cw image`)
 
-## 2. セッションがあるとき: 生成だけ投げる
-
-`--keep` で残したあと、あるいは既にセッションが立っているとき。
-
-`cw` が入っていれば (`uv tool install --editable .`)、パスは CWD 相対でよい。
-入っていない環境では `docker compose run --rm client src/scripts/<同じスクリプト>` で
-同じことができる(この節のコマンドはどちらでも通る)。
+既定は完成まで待って書き出す。`--out` を省くと、実行したカレントディレクトリに、日時つきの名前で書き出す。
 
 ```bash
-# 画像。既定は完成まで待って CWD に書き出す
 # --model はそのセッションで構築したモデル。省略すると既定の z-image になる
-cw image "プロンプト" --model qwen-image --aspect 9x16 --out works/foo.png
+cw image "プロンプト" --model qwen-image --aspect 9x16 --out ./foo.png
 
-# 参照画像つき(渡すと model によらず Qwen-Image-Edit の編集経路になる。最大3枚)
-cw image "image 1 の人物が公園のベンチに座っている" --ref works/ref.png --aspect 1x1
+# 参照画像つき。渡すと model によらず Qwen-Image-Edit の編集経路になる (最大3枚)
+cw image "image 1 の人物が公園のベンチに座っている" --ref ./ref.png --aspect 1x1
 
-# まとめて投げて、あとで回収する
+# 投入だけして、あとで回収する
 cw image "..." --no-wait
+```
+
+### 動画を生成する (`cw video`)
+
+画像を渡すと i2v、渡さなければ t2v で動画を生成する。
+
+```bash
+cw video ./still.png --model ltx-2.5 --out ./clip.mp4
+cw video --prompt "..." --aspect 9x16 --duration 5 --out ./clip.mp4
+
+# 先頭と末尾を置く (ltx-2.5 / wan2.2 / minimax-h3)
+cw video ./first.png --last-frame ./last.png --model ltx-2.5
+
+# ネガティブを差し替える。空にするなら --negative ""
+cw video ./still.png --model ltx-2.5 --negative "..."
+```
+
+### 後処理 (`cw post`)
+
+後処理を実行する。今は、フレーム補間とアップスケールが利用できる。
+
+```bash
+cw post ./clip.mp4 --size 4k --multiplier 2
+```
+
+### 投げたものを回収する (`cw jobs`)
+
+```bash
 cw jobs
 ```
 
-```bash
-# 動画(画像を渡すと i2v、渡さなければ t2v)
-cw video works/still.png --model ltx-2.5 --out works/clip.mp4
-cw video --prompt "..." --aspect 9x16 --out works/clip.mp4
+ジョブの記録はサーバーのメモリにしかない。ランタイムを止めると回収できなくなるので、
+`--no-wait` で投げたものは止める前に必ず回収する。
 
-# 仕上げ(フレーム補間 + アップスケール)
-cw post works/clip.mp4 --size 4k --multiplier 2
-cw jobs
+### 使用できるモデルを調べる (`cw models`)
 
-# どのモデルで何ができるか・1秒あたりいくらか
-cw models
-```
-
-**ジョブ台帳はサーバのメモリにしかない。** ランタイムを止めると回収できなくなるので、
-`--no-wait` で投げたものは止める前に必ず `status` で回収する。
-
-## 3. 止める
-
-`--keep` を付けた、または手で確保したときは、**作業が終わったら必ず実行する。**
+使用できるモデルを調べたり、コンテンツ生成の見積もりをするにあたり、情報を取得するために使用する。
 
 ```bash
-cw stop     # 見張り -> セッション -> 現物の確認 -> トンネル
+cw models              # タスク、末尾フレーム、音声、参照、fps、ウェイト、秒/映像秒、円
+cw models --gpu A100   # 単価を別の GPU で見る
 ```
 
-`cw` が無ければ同じ順で手で叩く。
+### トンネルを張り直す (`cw tunnel`)
+
+セッションは生きているのに手元へ届かないときに使う。ランタイムは確保し直さない。
 
 ```bash
-src/scripts/colab_watch.sh --stop
-src/scripts/colab.sh stop -s comfy
-src/scripts/colab.sh sessions        # 現物が消えたことを確認する
-docker compose stop tunnel
+cw tunnel restart     # up / stop / logs もある
 ```
 
-`stop` が「not found」でも安心しない。台帳から消えることと実体が止まることは別なので、
-`sessions` で必ず現物を見る。`[?]` で始まる名前なしのセッションが出たら台帳から外れた
-孤児で `stop -s` では引けない。**放っておくと課金が続く**ので `unassign` で解放する。
+### 止める (`cw stop`)
+
+`cw up` でランタイムを確保したときや手動で確保したときは、作業が終わったら必ず実行する。
 
 ```bash
-docker compose exec -T colab bash -lc 'python - <<PY
-from colab_cli.common import state
-sessions, assignments = state.sync_sessions()
-for a in assignments:
-    state.client.unassign(a.endpoint)
-PY'
+cw stop              # 監視、セッション、現物の確認、トンネルの順に畳む
+cw stop --orphans    # 名前の無い割り当て ([?] で出るもの) も解放する
 ```
+
+`stop` が「not found」でも安心しない。一覧から消えることと実体が止まることは別なので、
+最後に出る `cw sessions` で現物を見る。`[?]` で始まる名前なしのものが残っていたら、
+`cw stop --orphans` で解放する。名前が無い割り当ては `cw stop` だけでは引けず、放って
+おくと課金が続く。
 
 ## モデルの選び方
 
-**1セッションに1モデル。** ディスクの都合で H3(動画 42.5GB)と Qwen 系(画像 28GB)は
-同居できない。画像と動画の両方を頼まれたら、**どちらを先にやるかを決めて別セッションにする。**
+どんなモデルが使えて、費用はどれくらいかかるかは `cw models` で調べることができる。
 
-| 用途 | `--setup` | `--models` | 備考 |
-|---|---|---|---|
-| 画像・参照つき編集 | `image` | `qwen-image-edit` | 参照画像を渡せる。キャラの一貫性はこちら |
-| 画像・速い / 素直 | `image` | `z-image` | 11.3GB。8step で速い |
-| 画像・追従が強い | `image` | `qwen-image` | 28GB |
-| 動画・既定候補 | `video` | `ltx-2.3-gguf` | L4 で一番速い(5秒が約72秒)。音声つき 25fps |
-| 動画・いちばん新しい | `video` | `ltx-2.5` | L4 で 720p まで素で回る(480p 5秒が約105秒)。音声つき 24fps。**先頭+末尾を置ける** |
-| 動画・素直な i2v | `video` | `wan2.2` | 4step 蒸留。音声なし |
-| 動画・音声で駆動 | `video` | `wan2.2-s2v` | リップシンク。1チャンク 4.81秒まで |
-| 動画・参照つき (r2v) | `h3` | `fl2va` / `ref2va` | 参照つき生成は H3 だけ。42.5GB |
+- 1セッションに1モデル
+  - ディスクの都合で H3 (42.5GB) と Qwen 系 (28GB) は同居できない
+  - 画像と動画の両方を頼まれたら、どちらを先にやるかを決めて別セッションにする
+- 参照つき生成 (r2v) は `minimax-h3` だけ
+  - `ref2va` のウェイト (+21GB) が要るので、構築時に `--models "fl2va ref2va"` を渡す
+  - 参照画像でキャラを固定したいなら H3、静止画の編集なら `qwen-image-edit`
+- GPU は既定の `L4` でよい
+  - A100 が要るのは `ltx-2.3` の fp8 だけで、`ltx-2.5` は int8 で L4 に載る
+- LTX 系の Hugging Face リポジトリは gated
+  - 未同意のトークンだと取得が 403 になるのに構築は止まらず、ウェイトの無いセッションが
+    立ち上がる (2026-08-17 に踏んだ)
+  - 同意はモデルページの "Agree and Access"。2.3 と 2.5 は別リポジトリなので別々に要る
 
-GPU は既定の `L4` でよい。A100 が要るのは `ltx-2.3` の fp8 だけ(`ltx-2.5` は int8 で L4 に載る)。
+## プロンプトを書く
 
-**LTX 系の HF リポジトリは gated。** 未同意のトークンだと取得が 403 になるのに構築は
-止まらず、ウェイトの無いセッションが立ち上がる(2026-08-17 に踏んだ)。落ちたかどうかは
-`GET /health` の `video_ready` で見る。同意はモデルページの "Agree and Access" で、
-**2.3 と 2.5 は別リポジトリなので別々に要る。**
+プロンプトを詰めるのは生成の前に終わらせる。書き直しは無料だが、生成のやり直しは GPU
+時間を使う。モデルごとに作法があるので、書き方はそれぞれのスキルが持っている。
+
+- LTX-2.5 は `ltx-prompt` スキル
+  - 散文の書き方、多ショットのつなぎ方、8k+1 のグリッド
+- MiniMax H3 は MiniMax 公式の `h3-prompt-writing` スキル
+  - `npx skills add https://github.com/MiniMax-AI/MiniMax-H3 --skill h3-prompt-writing`
+
+### H3 でこのラッパ固有になるところ
+
+公式スキルは記法だけを持っている。ここに頼むときの対応は次のとおり。
+
+| 記法上のタスク | 渡す素材 | このラッパ |
+|---|---|---|
+| T2VA | なし | `cw video --prompt "..."` |
+| I2VA | 先頭フレーム | `cw video ./first.png` |
+| FL2VA | 先頭と末尾 | `cw video ./first.png --last-frame ./last.png` |
+| Ref2VA | 参照画像、動画、音声 | `cw` に口が無い。`POST /v1/generate` に `task: "r2v"` と `ref_images` / `ref_videos` / `ref_audios` (最大 9 / 3 / 3) を直に投げる |
+| L2VA | 末尾フレームだけ | 経路なし。先頭フレーム無しの末尾は受け付けない |
+
+尺は API 側で 24fps、17k+5 フレームのグリッドに切り上がり、124〜362 フレーム
+(5.167〜15.083秒) に収まる。`--duration` に何を渡してもこのどれかになるので、プロンプト
+内のタイムスタンプは生成尺を基準に書く。5秒未満を頼まれても 5.167秒生成されるため、
+切って使う前提なら切られる側に見せ場を置かない。
+
+| フレーム | 秒 | | フレーム | 秒 |
+|---|---|---|---|---|
+| 124 | 5.167 | | 243 | 10.125 |
+| 141 | 5.875 | | 260 | 10.833 |
+| 158 | 6.583 | | 277 | 11.542 |
+| 175 | 7.292 | | 294 | 12.250 |
+| 192 | 8.000 | | 311 | 12.958 |
+| 209 | 8.708 | | 328 | 13.667 |
+| 226 | 9.417 | | 362 | 15.083 |
+
+`negative` は Wan と LTX 用で、H3 では使わない。除外したい要素は肯定形で書き切って潰す。
 
 ## やってはいけないこと
 
-- **ComfyUI(8188)を外に出さない。** 認証が無く、ワークフローの投入は任意コード実行と等価。
-- **`docker compose run --rm colab` を使わない。** `colab new` が起こす keep-alive
-  デーモンが道連れになってランタイムが刈り取られる。`colab` は常駐、操作は
-  `src/scripts/colab.sh`(中身は `docker compose exec`)経由。
-- **`docker compose restart tunnel` を連打しない。** 1ランタイムにつき `colab ssh` は
-  1本だけで、叩き直すと `Already-active SSH session (HTTP 429)` で締め出される。
-- **セッションが無いのに `tunnel` を上げたままにしない。** ProxyCommand の
-  `colab ssh -s comfy` がその名前でランタイムを確保する(実測では CPU ランタイム)。
-  止めるときは `colab.sh stop` と一緒に `docker compose stop tunnel` まで行う。
-- **`.colab/` の中身をコミット・表示しない。** OAuth トークン・SSH 鍵・API キー・
-  HF トークンが入っている。
+- ComfyUI (8188) と `.colab/` を外に出さない
+  - ComfyUI は認証が無く、ワークフローの投入は任意コード実行と等価になる
+  - `.colab/` には OAuth トークン、SSH 鍵、API キー、HF トークンが入っている
+- 届かないときに確保し直さない
+  - 生きているランタイムを捨てて、もう一度 GPU を掴むことになる
+  - `cw tunnel restart` の連打も避ける。SSH は1ランタイムに1本だけで、叩き直すと
+    `Already-active SSH session (HTTP 429)` で締め出される
+- セッションが無いのにトンネルを上げたままにしない
+  - その名前でランタイムを確保してしまう (実測では CPU ランタイム)
+  - `cw stop` はトンネルまで畳む
+- 生成サーバを増やさない
+  - 1台に1つだけ動かし、clone を増やさない
+  - 並列接続にも複数セッションの同時実行にも対応していないので、複数のプロジェクトから
+    同時には使えない。どのプロジェクトからでも叩けるが、頼むのは順番に
 
 ## うまくいかないとき
 
 | 症状 | 見るところ |
 |---|---|
 | `value_not_in_list` (400) | 構築したモデルと `--model` がずれている。セッションはそのまま、`--model` を直して投げ直す |
-| 生成が届かない | `colab_link` のエラー文が原因を名指しする(認証切れ / セッション消失 / トンネル切れ) |
-| `comfy_ready` が false | 構築がまだ。`colab_setup_status.py` |
-| ウェイトが載らない | `curl` ではなく `GET /health` の `video_ready` を見る |
-| 進んでいるのか分からない | `.colab/watch-state.json` と `.colab/keepalive-watch.log` |
+| 生成が届かない | エラー文が原因を名指しする (認証切れ、セッション消失、トンネル切れ)。`cw status` |
+| ComfyUI が応答しない | 構築がまだ終わっていない。`cw status` の「疎通」 |
+| ウェイトが載らない | `cw status` の「動画ウェイト」。静止画モデルはここに出ないので `cw image` が通るかで見る |
 | 落ちた理由が知りたい | 止める前に `/content/logs/{api,comfyui,setup}.log`。止めると消える |
 
-見張りが自動停止したときの回収先は `works/.rescue/<セッション>/`。
-`--gpu L4` を渡しても CPU ランタイムが返ることがあるので、**確保直後に
-`src/scripts/colab.sh sessions` で `Hardware: L4 | Variant: GPU` を確認する。**
+監視が自動停止したときの回収先は、clone 先の `works/.rescue/<セッション>/`。
