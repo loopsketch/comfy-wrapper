@@ -400,9 +400,9 @@ class InitTest(unittest.TestCase):
 
     def test_skills_scope_is_chosen_explicitly(self):
         npx = Recorder()
-        with mock.patch.object(cw, "_npx", npx):
-            cw.main(["init", "skills", "--global"])
-            cw.main(["init", "skills", "--project"])
+        with mock.patch.object(cw, "_npx", npx), mock.patch("builtins.print"):
+            cw.main(["init", "skills", "--global", "--no-h3"])
+            cw.main(["init", "skills", "--project", "--no-h3"])
         self.assertIn("-g", npx.calls[0])
         self.assertNotIn("-p", npx.calls[0])
         self.assertIn("-p", npx.calls[1])
@@ -411,14 +411,36 @@ class InitTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             cw.main(["init", "skills", "--project", "--global"])
 
-    def test_h3_is_fetched_from_the_official_repository(self):
-        """H3 の書き方は MiniMax 公式に譲った。こちらから配らない。"""
+    def test_h3_comes_from_the_official_repository_by_default(self):
+        """H3 の書き方は MiniMax 公式に譲った。こちらから配らず、公式を取りに行く。"""
         npx = Recorder()
         with mock.patch.object(cw, "_npx", npx), mock.patch("builtins.print"):
-            cw.main(["init", "skills", "--h3"])
+            cw.main(["init", "skills"])
         self.assertEqual(len(npx.calls), 2)
         self.assertIn("https://github.com/MiniMax-AI/MiniMax-H3", npx.calls[1])
         self.assertIn("h3-prompt-writing", npx.calls[1])
+        # 入れ先はうちの2つと同じ。片方だけ ~/.claude に散らない
+        self.assertIn("-p", npx.calls[1])
+
+    def test_h3_can_be_skipped(self):
+        npx = Recorder()
+        with mock.patch.object(cw, "_npx", npx):
+            cw.main(["init", "skills", "--no-h3"])
+        self.assertEqual(len(npx.calls), 1)
+
+    def test_a_failed_h3_does_not_hide_that_ours_are_in(self):
+        """**黙らせない。** うちの2つが入った状態で公式だけ落ちることがある。"""
+        npx = Recorder(rc=1)
+        ours = Recorder()
+
+        def install(*args):
+            return ours(*args) if str(cw.REPO) in args else npx(*args)
+
+        with mock.patch.object(cw, "_npx", install), \
+             mock.patch("builtins.print") as out:
+            self.assertEqual(cw.main(["init", "skills"]), 1)
+        printed = " ".join(str(c[0][0]) for c in out.call_args_list if c[0])
+        self.assertIn("うちの2つは入っています", printed)
 
     def test_ssh_keeps_an_existing_key(self):
         """**作り直すと張り直しになる。** 黙って上書きしないこと。"""

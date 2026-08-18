@@ -474,7 +474,7 @@ INIT_USAGE = """\
 cw init                        足りないものを見る
 cw init ssh [--force]          SSH 鍵を作る (.colab/.ssh/id_ed25519)
 cw init hf [--token <token>]   Hugging Face のトークンを保存する (.colab/hf-token)
-cw init skills [--project|--global]
+cw init skills [--project|--global] [--no-h3]
                                Claude Code のスキルを入れる (既定はいまのディレクトリ)
 
 トークンを --token で渡さないときは標準入力から読みます。**画面にも履歴にも残さない**
@@ -582,9 +582,11 @@ def _npx(*args: str) -> int:
 
 
 def _init_skills(argv: list[str]) -> int:
-    """スキルを clone から入れる。**GitHub を経由しない。**
+    """スキルを入れる。**うちの2つは clone から、H3 の記法は公式から。**
 
-    手元の `cw` と同じソースツリーから入るので、CLI とスキルの版がずれない。
+    うちの分は手元の `cw` と同じソースツリーから入るので、CLI とスキルの版がずれない。
+    H3 のプロンプト記法は MiniMax 公式が持っているので、そちらを取りに行く
+    (写すと追随の責任が二重になる)。
     """
     parser = argparse.ArgumentParser(prog="cw init skills",
                                      description="Claude Code のスキルを入れる")
@@ -593,9 +595,9 @@ def _init_skills(argv: list[str]) -> int:
                        help="いまのディレクトリの .claude/skills/ へ入れる (既定)")
     where.add_argument("--global", dest="scope", action="store_const", const="-g",
                        help="~/.claude/skills/ へ入れて、どのプロジェクトからも使う")
-    parser.add_argument("--h3", action="store_true",
-                        help="MiniMax 公式の h3-prompt-writing も入れる (GitHub から)")
-    parser.set_defaults(scope="-p")
+    parser.add_argument("--no-h3", dest="h3", action="store_false",
+                        help="MiniMax 公式の h3-prompt-writing を入れない")
+    parser.set_defaults(scope="-p", h3=True)
     args = parser.parse_args(argv)
 
     scope = [args.scope]
@@ -603,9 +605,17 @@ def _init_skills(argv: list[str]) -> int:
     rc = _npx("add", str(REPO), *skills, "-y", *scope)
     if rc != 0 or not args.h3:
         return rc
+
     repo, skill = H3_SKILL
-    _section("MiniMax 公式のスキルを入れます")
-    return _npx("add", repo, "--skill", skill, "-y", *scope)
+    # リポジトリが大きく、取得に数分かかる。黙って止まって見えないように断っておく
+    _section("MiniMax 公式の h3-prompt-writing を入れます (数分かかります)")
+    h3_rc = _npx("add", repo, "--skill", skill, "-y", *scope)
+    if h3_rc != 0:
+        # **うちの2つは入り終わっている。** ここで失敗したことを黙らせない
+        print(f"\n{skill} が入りませんでした (GitHub へ届かない・レート制限など)。"
+              f"うちの2つは入っています\n  あとで: npx skills add {repo} "
+              f"--skill {skill}", file=sys.stderr)
+    return h3_rc
 
 
 def cmd_init(argv: list[str]) -> int:

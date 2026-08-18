@@ -223,12 +223,13 @@ docker compose run --rm client src/scripts/generate_video.py --first-frame works
 uv tool install --editable /path/to/comfy-wrapper
 
 cd /path/to/your-project
-cw init skills          # このプロジェクトへ入れる (--global で ~/.claude へ)
-cw init skills --h3     # MiniMax 公式の h3-prompt-writing も入れる
+cw init skills            # このプロジェクトへ入れる (--global で ~/.claude へ)
+cw init skills --no-h3    # MiniMax 公式の h3-prompt-writing は入れない
 ```
 
-`cw init skills` は clone から入れます(GitHub を経由しません)。手元の `cw` と同じ
-ソースツリーから入るので、CLI とスキルの版がずれません。中身は
+`colab-comfy` と `ltx-prompt` は clone から入ります(GitHub を経由しません)。手元の
+`cw` と同じソースツリーから入るので、CLI とスキルの版がずれません。`h3-prompt-writing`
+だけは MiniMax 公式から取りに行きます。中身は
 [skills CLI](https://github.com/vercel-labs/skills) なので、手で叩いても同じです。
 
 ```bash
