@@ -51,10 +51,10 @@ services:
     # PID 1 を init にして、停止済み keep-alive デーモンのゾンビを刈る
     init: true
 
-  # Colab 側の 8000(API) / 8188(ComfyUI) を ssh -L で手元へ通す常駐トンネル。
+  # Colab 側の 8000(API) を ssh -L でこのコンテナへ通す常駐トンネル。
   #   docker compose up -d tunnel
   # client からは http://tunnel:8000 で届くので、宛先は固定でよい。
-  # ComfyUI は Colab 側で 127.0.0.1 に閉じたまま。外へは出さない。
+  # ComfyUI は Colab 側で 127.0.0.1 に閉じたまま。
   tunnel:
     image: comfy-wrapper-colab:latest
     volumes:
@@ -64,9 +64,9 @@ services:
     environment:
       HOME: /app/.colab
       COLAB_SESSION: ${COLAB_SESSION:-comfy}
+    # **ホスト IP を省くと 0.0.0.0 になる。** ポートを足すときは必ず付ける
     ports:
-      - "8000:8000"
-      - "8188:8188"
+      - "127.0.0.1:8000:8000"
     # **docker の restart に張り直しを任せない。** 1ランタイムにつき colab ssh は1本だけで、
     # 秒単位で叩き直すと Already-active SSH session (HTTP 429) で締め出される。
     # 待ちを入れた張り直しは colab_tunnel.sh が行う。

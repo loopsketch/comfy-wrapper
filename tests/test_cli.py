@@ -11,6 +11,7 @@ import io
 import sys
 import unittest
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from unittest import mock
 
@@ -38,6 +39,21 @@ class RepoTest(unittest.TestCase):
             repo = cw.repo_home()
         self.assertTrue((repo / "src" / "scripts" / "generate_image.py").exists())
         self.assertTrue((repo / "docker-compose.yml").exists())
+
+    def test_only_8000_is_published_and_only_to_loopback(self):
+        """ホストへ出すポートを固定する。
+
+        **ComfyUI(8188)はホストへ出さない。** 認証が無く、ワークフローを投げられること
+        自体が任意コード実行と等価になる。手元から 8188 を使う経路も無い。
+
+        **Docker はホスト IP を省くと 0.0.0.0 に開く。** `"8000:8000"` と書いていた時期が
+        あり、方針は README に書いてあるのに設定が LAN へ出ていた。
+        """
+        with mock.patch.dict("os.environ", {}, clear=True):
+            repo = cw.repo_home()
+        text = (repo / "docker-compose.yml").read_text()
+        published = re.findall(r'^\s*-\s*"([^"]*:\d+)"\s*$', text, re.M)
+        self.assertEqual(published, ["127.0.0.1:8000:8000"])
 
     def test_env_override(self):
         with TemporaryDirectory() as tmp:
