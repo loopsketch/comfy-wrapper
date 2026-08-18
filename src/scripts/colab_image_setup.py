@@ -48,14 +48,20 @@ fi
 # 成立しない。**Xet のまま取り、外から無進捗を見て殺す**。
 # 最後の1回だけ Xet を切って挑む。
 
-# **hf_transfer は既定で使わない。** Rust 実装で速い(実測 566MB/s)が、Python の
-# HTTP 層を通らないため HF_HUB_DOWNLOAD_TIMEOUT が効かない。止まっても例外が
-# 上がらず、download_*.py のリトライに入れないまま無応答になる。速さより、
-# 止まったら気づいて再開できることを取る。
-# 使いたいときは CW_HF_TRANSFER=1。
+# **Xet を高性能モードで回す。** 帯域を使い切り、CPU コアを並列に使う設定に切り替わる。
+# 旧 HF_HUB_ENABLE_HF_TRANSFER=1 の後継で、hf_transfer 自体は huggingface_hub 1.x で
+# 使われなくなった(env を渡しても FutureWarning が出るだけで、経路は変わらない)。
+#
+# **hf_transfer に落とす道はもう無い。** Xet 対応リポジトリでは file_download.py が
+# `xet_file_data is not None and is_xet_available()` で Xet を先に選ぶ。Xet を切れば
+# 素の HTTP になるが、実測 4〜29MB/s では 19GB 級が成立しない。
+# 切りたいときは CW_XET_HIGH_PERFORMANCE=0。
+if [ "${{CW_XET_HIGH_PERFORMANCE:-1}}" != "0" ]; then
+  export HF_XET_HIGH_PERFORMANCE=1
+  echo "Xet を高性能モードで使う"
+fi
 if [ "${{CW_HF_TRANSFER:-0}}" = "1" ]; then
-  pip install -q hf_transfer 2>/dev/null && export HF_HUB_ENABLE_HF_TRANSFER=1 \
-    && echo "hf_transfer を使う (タイムアウトは効かない)"
+  echo "CW_HF_TRANSFER は効かない (huggingface_hub 1.x で hf_transfer は使われない)。Xet の高性能モードを使う"
 fi
 export HF_HUB_DOWNLOAD_TIMEOUT=30
 # **バッファリングを切る。** リダイレクト先がファイルだと Python の標準出力は

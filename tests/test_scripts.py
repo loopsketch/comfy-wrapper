@@ -9,6 +9,7 @@ import _bootstrap  # noqa: F401
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -29,6 +30,73 @@ def _load(name: str):
 
 generate_image = _load("generate_image")
 postprocess = _load("postprocess")
+
+SETUPS = ("colab_setup", "colab_image_setup", "colab_video_setup")
+
+
+def _transfer_block(script: str) -> str:
+    """SCRIPT から転送モードを決める if ブロックだけを取り出す。"""
+    lines = script.splitlines()
+    start = next(
+        i for i, line in enumerate(lines)
+        if line.startswith("if ") and "CW_XET_HIGH_PERFORMANCE" in line
+    )
+    end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
+    return "\n".join(lines[start:end + 1])
+
+
+class SetupTransferModeTest(unittest.TestCase):
+    """構築スクリプトが選ぶ転送経路。
+
+    **hf_transfer はもう使われない。** huggingface_hub 1.x は
+    HF_HUB_ENABLE_HF_TRANSFER を受け取っても FutureWarning を出すだけで、
+    Xet 対応リポジトリでは file_download.py が Xet を先に選ぶ。後継は
+    HF_XET_HIGH_PERFORMANCE で、こちらは hf-xet 自体を高性能設定で回す。
+    """
+
+    def _script(self, name: str) -> str:
+        return _load(name).SCRIPT
+
+    def test_every_setup_is_valid_shell(self):
+        for name in SETUPS:
+            with self.subTest(name):
+                r = subprocess.run(
+                    ["bash", "-n"], input=self._script(name),
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_high_performance_is_on_by_default(self):
+        for name in SETUPS:
+            with self.subTest(name):
+                block = _transfer_block(self._script(name))
+                r = subprocess.run(
+                    ["bash", "-c", block + "\necho \"[$HF_XET_HIGH_PERFORMANCE]\""],
+                    capture_output=True, text=True, env={"PATH": os.environ["PATH"]},
+                )
+                self.assertIn("[1]", r.stdout)
+
+    def test_it_can_be_turned_off(self):
+        """帯域と CPU を使い切る設定なので、切る道は残す。"""
+        for name in SETUPS:
+            with self.subTest(name):
+                block = _transfer_block(self._script(name))
+                r = subprocess.run(
+                    ["bash", "-c", block + "\necho \"[$HF_XET_HIGH_PERFORMANCE]\""],
+                    capture_output=True, text=True,
+                    env={"PATH": os.environ["PATH"], "CW_XET_HIGH_PERFORMANCE": "0"},
+                )
+                self.assertIn("[]", r.stdout)
+
+    def test_the_dead_hf_transfer_switch_is_gone(self):
+        """効かない口を残すと、設定したのに変わらないという誤解を生む。"""
+        for name in SETUPS:
+            with self.subTest(name):
+                script = self._script(name)
+                # コメントでの言及は残す (なぜ使わないかを書いてある)。
+                # 消したいのは実際に効かせる行のほう
+                self.assertNotIn("export HF_HUB_ENABLE_HF_TRANSFER", script)
+                self.assertNotIn("pip install -q hf_transfer", script)
 
 
 class ParseLoraTest(unittest.TestCase):
