@@ -104,13 +104,18 @@ docker compose up -d colab                  # must stay running (see note below)
 cw auth login                               # prints an authorization URL
 cw auth login --code <code from browser>    # completes the login
 
-docker compose exec colab mkdir -p /app/.colab/.ssh
-docker compose exec colab ssh-keygen \
-  -t ed25519 -N "" -C "comfy-wrapper" -f /app/.colab/.ssh/id_ed25519
+cw init ssh                                 # create the SSH key (ed25519)
+cw init hf < token.txt                      # store the Hugging Face token (--token works too)
+cw init                                     # list whatever is still missing
 ```
 
 Tokens and keys live in `.colab/` (git-ignored). The `colab` container refreshes the
 OAuth token every 30 minutes on its own, so the browser step is needed only once.
+
+`cw init` exists so nobody has to remember the storage layout or the in-container paths.
+`cw init ssh` leaves an existing key alone (replacing it means re-establishing the
+tunnel). The Hugging Face token is optional on paper and mandatory in practice, so
+`cw init` warns when it is missing.
 
 > Keep the `colab` service running. `colab new` spawns a detached keep-alive daemon; if
 > you use `docker compose run --rm` the container — and the daemon with it — disappears
@@ -169,6 +174,11 @@ Watchdog → session → **ask the server** → tunnel, in that order. A session
 local ledger is not the same as the remote runtime stopping, so the last thing printed is
 what the server says. Billing is per GPU-hour: confirm the session is really gone.
 
+If that last listing still shows entries starting with `[?]`, those are allocations that
+fell out of the ledger. `cw stop -s <name>` cannot reach them; release them with
+`cw stop --orphans` (that runs `src/scripts/colab_unassign.py`; `--all` folds named
+sessions too).
+
 **Do not leave `tunnel` running.** With no session present, its ProxyCommand
 (`colab ssh -s comfy`) allocates a runtime under that name — observed as a CPU runtime,
 so no compute units are spent, but it is an allocation you did not ask for. `cw stop`
@@ -215,16 +225,40 @@ docker compose run --rm client src/scripts/generate_video.py --first-frame works
 
 ## Using it from Claude Code
 
-Two Claude Code skills live in `.claude/skills/` (tracked in git and meant to be shared);
-`.claude/settings.json` is personal and stays out of git.
+The skills are written against `cw`, so they work **from any project**. Install `cw`,
+then install the skills you want.
+
+```bash
+uv tool install --editable /path/to/comfy-wrapper
+
+cd /path/to/your-project
+cw init skills          # install into this project (--global targets ~/.claude)
+cw init skills --h3     # also install MiniMax's official h3-prompt-writing
+```
+
+`cw init skills` installs from the clone rather than GitHub, so the skills always match
+the `cw` you have installed. It drives the
+[skills CLI](https://github.com/vercel-labs/skills), so the manual route is the same:
+
+```bash
+npx skills add /path/to/comfy-wrapper --skill colab-comfy --skill ltx-prompt
+npx skills add https://github.com/loopsketch/comfy-wrapper --skill colab-comfy
+npx skills add https://github.com/MiniMax-AI/MiniMax-H3 --skill h3-prompt-writing
+```
 
 - **`colab-comfy`** — running the thing. Ask for an image or a clip and it supplies the
   whole procedure: check state, allocate, build, generate, stop, plus the rules that keep
-  the meter from running.
-- **`h3-prompt`** — writing for MiniMax H3. The official prompt notation: task selection,
-  shot and camera vocabulary, the `<d>` form for dialogue and singing, reference labels,
-  and the two audio fields. H3 is trained on this format, and camera or lip-sync
-  instructions stop working when you drift from it.
+  the meter from running. It reads the model list from `cw models` instead of copying it,
+  so it does not go stale when a model is added.
+- **`ltx-prompt`** — writing for LTX-2.5: prose, multi-shot cuts, the 8k+1 duration grid,
+  and the phrasings that do nothing.
+- **`h3-prompt-writing`** — writing for MiniMax H3 is left to the
+  [official skill](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills). What is
+  specific to this wrapper (the duration grid, how the notation's tasks map onto the
+  commands, the extra weights `r2v` needs) lives in `colab-comfy`.
+
+This repository's `.claude/skills/` is the source the CLI installs from, so working here
+needs no install step (`.claude/settings.json` is personal and stays out of git).
 
 ## Usage
 
@@ -522,7 +556,7 @@ without noticing until a runtime is already billing:
 pyproject.toml         package definition for cw / comfy-wrapper (no dependencies)
 docker-compose.yml     client / colab / tunnel
 docker/                images for each service
-.claude/skills/        Claude Code skills (colab-comfy: run it / h3-prompt: write for H3)
+.claude/skills/        Claude Code skills (colab-comfy: run it / ltx-prompt: write for LTX)
 src/
   cli/                 the cw dispatcher (installed as comfy_wrapper)
   server/              FastAPI + ComfyUI bridge; runs on the Colab runtime

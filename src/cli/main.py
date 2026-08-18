@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import importlib.util
 import json
 import os
@@ -72,9 +73,10 @@ cw — Colab の GPU 上の ComfyUI に生成を頼む
   cw status                                compose / セッション / 見張り / 疎通
   cw sessions                              サーバに現物を問い合わせる
   cw watch [セッション] [上限分]           見張りの開始・状態・停止
+  cw init [ssh|hf|skills]                  鍵・トークン・スキルを用意する
   cw auth [login [--code <code>]]          Colab の認証を見る・入れ直す
   cw tunnel up|restart|stop|logs           トンネルだけを扱う (セッションは触らない)
-  cw stop                                  ランタイムとトンネルを畳む
+  cw stop [--orphans]                      ランタイムとトンネルを畳む
   cw key issue|list|revoke|push            アクセスキー
 
 各コマンドの詳しい引数は `cw <コマンド> --help` で出ます。
@@ -293,16 +295,20 @@ def _docker(*args: str, quiet: bool = False) -> int:
         return 127
 
 
-def _colab_exec(*args: str) -> int:
-    """colab コンテナで python を動かす。**ここは compose 経由のまま。**
+def _colab_run(*args: str) -> int:
+    """colab コンテナでコマンドを動かす。**ここは compose 経由のまま。**
 
-    google-auth と colab_cli はこのコンテナにしか入っていない。ホスト側に入れると
-    トークンの置き場が2つになるので、認証まわりは常にコンテナの中で完結させる。
+    google-auth と colab_cli、ssh-keygen はこのコンテナにしか入っていない。ホスト側に
+    入れるとトークンと鍵の置き場が2つになるので、認証まわりは常にコンテナで完結させる。
     """
     rc = _docker("compose", "up", "-d", "colab", quiet=True)
     if rc != 0:
         return rc
-    return _docker("compose", "exec", "-T", "colab", "python", *args)
+    return _docker("compose", "exec", "-T", "colab", *args)
+
+
+def _colab_exec(*args: str) -> int:
+    return _colab_run("python", *args)
 
 
 def cmd_up(argv: list[str]) -> int:
@@ -359,12 +365,19 @@ def cmd_watch(argv: list[str]) -> int:
 def cmd_stop(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="cw stop", description="ランタイムとトンネルを畳む")
     parser.add_argument("-s", "--session", default="comfy")
+    parser.add_argument("--orphans", action="store_true",
+                        help="名前の無い割り当て ([?] で出るもの) も解放する")
     args = parser.parse_args(argv)
 
     _section("見張りを止めます")
     _sh("colab_watch.sh", "--stop")
     _section("セッションを止めます")
     rc = _sh("colab.sh", "stop", "-s", args.session)
+    # **名前が無い割り当ては stop -s では引けない。** 台帳を作り直した回や接続に
+    # 失敗した回に残り、放っておくと課金が続く
+    if args.orphans:
+        _section("名前の無い割り当てを解放します")
+        _colab_exec("/app/src/scripts/colab_unassign.py")
     # **台帳から消えることと、リモートが止まることは別。** 実体が生きていれば
     # 課金が続くので、止めたあとに必ずサーバへ問い合わせる
     _section("サーバ側に残っていないか確認します")
@@ -457,6 +470,165 @@ def cmd_auth(argv: list[str]) -> int:
     return rc
 
 
+INIT_USAGE = """\
+cw init                        足りないものを見る
+cw init ssh [--force]          SSH 鍵を作る (.colab/.ssh/id_ed25519)
+cw init hf [--token <token>]   Hugging Face のトークンを保存する (.colab/hf-token)
+cw init skills [--project|--global]
+                               Claude Code のスキルを入れる (既定はいまのディレクトリ)
+
+トークンを --token で渡さないときは標準入力から読みます。**画面にも履歴にも残さない**
+ので、`cw init hf < token.txt` や `pbpaste | cw init hf` の形で渡してください。
+"""
+
+SSH_KEY = colab_link.COLAB_DIR / ".ssh" / "id_ed25519"
+HF_TOKEN = colab_link.COLAB_DIR / "hf-token"
+
+
+def _init_status() -> int:
+    """初回に要るものが揃っているかを見る。**中身は出さない。**"""
+    print(f"置き場: {colab_link.COLAB_DIR}\n")
+    rows = [
+        ["SSH 鍵", SSH_KEY.name, SSH_KEY.exists(), "cw init ssh"],
+        ["HF トークン", HF_TOKEN.name, HF_TOKEN.exists(), "cw init hf"],
+        ["アクセスキー", colab_link.API_KEY_FILE.name,
+         colab_link.API_KEY_FILE.exists() or colab_link.LEGACY_API_KEY_FILE.exists(),
+         "cw key issue --name <用途>"],
+        ["Colab の認証", colab_link.AUTH_STATE.name, colab_link.AUTH_STATE.exists(),
+         "cw auth login"],
+    ]
+    print(_table(
+        ["要るもの", "ファイル", "状態", "無いとき"],
+        [[name, filename, "あり" if ok else "なし", "" if ok else fix]
+         for name, filename, ok, fix in rows],
+    ))
+    # HF トークンだけは無くても動く。ただし取得が絞られ、その待ちがそのまま課金になる
+    if not HF_TOKEN.exists():
+        print("\nHF トークンが無いとウェイトの取得が大きく絞られます (実測で 622MB/s が "
+              "8MB/s)。待ち時間はそのまま GPU の課金です")
+    missing = [name for name, _, ok, _ in rows if not ok and name != "HF トークン"]
+    return 1 if missing else 0
+
+
+def _init_ssh(argv: list[str]) -> int:
+    """SSH 鍵を作る。トンネルの ProxyCommand が使う鍵で、ed25519 で固定する。"""
+    parser = argparse.ArgumentParser(prog="cw init ssh", description="SSH 鍵を作る")
+    parser.add_argument("--force", action="store_true", help="あっても作り直す")
+    args = parser.parse_args(argv)
+
+    if SSH_KEY.exists() and not args.force:
+        print(f"すでにあります: {SSH_KEY}\n作り直すなら cw init ssh --force")
+        return 0
+    if SSH_KEY.exists():
+        # ssh-keygen は上書きの確認を対話で聞く。無人で通すために先に消す
+        SSH_KEY.unlink()
+        SSH_KEY.with_suffix(".pub").unlink(missing_ok=True)
+
+    rc = _colab_run(
+        "bash", "-lc",
+        'mkdir -p /app/.colab/.ssh && chmod 700 /app/.colab/.ssh && '
+        'ssh-keygen -t ed25519 -N "" -C comfy-wrapper '
+        '-f /app/.colab/.ssh/id_ed25519',
+    )
+    if rc == 0:
+        print(f"\n作りました: {SSH_KEY}")
+    return rc
+
+
+def _init_hf(argv: list[str]) -> int:
+    """Hugging Face のトークンを置く。**受け取った値は表示しない。**"""
+    parser = argparse.ArgumentParser(prog="cw init hf", description="HF トークンを保存する")
+    parser.add_argument("--token", help="省略すると標準入力から読む")
+    args = parser.parse_args(argv)
+
+    token = args.token
+    if token is None:
+        if sys.stdin.isatty():
+            print("Hugging Face のトークンを貼り付けて Enter (入力は表示されません):")
+            token = getpass.getpass("")
+        else:
+            token = sys.stdin.read()
+    token = token.strip()
+    if not token:
+        raise SystemExit("トークンが空です")
+
+    HF_TOKEN.parent.mkdir(parents=True, exist_ok=True)
+    HF_TOKEN.write_text(token + "\n")
+    HF_TOKEN.chmod(0o600)
+    print(f"保存しました: {HF_TOKEN}")
+    print("ランタイムへは構築のときに送られます (gated なリポジトリは先に "
+          '"Agree and Access" が要ります)')
+    return 0
+
+
+# 配るスキル。**この2つだけ。** H3 の書き方は MiniMax 公式へ譲った (issue #6)
+SKILLS = ("colab-comfy", "ltx-prompt")
+H3_SKILL = ("https://github.com/MiniMax-AI/MiniMax-H3", "h3-prompt-writing")
+
+
+def _npx(*args: str) -> int:
+    """skills CLI を**呼ぶ側の CWD で**動かす。
+
+    運用系と違って cwd=REPO にしない。入れる先はいま居るプロジェクトなので、
+    ここで REPO へ移ると comfy-wrapper 自身へ入れてしまう。
+    """
+    sys.stdout.flush()
+    try:
+        return subprocess.run(["npx", "-y", "skills@latest", *args]).returncode
+    except FileNotFoundError:
+        print("npx がありません。Node.js を入れるか、手で入れてください:", file=sys.stderr)
+        print(f"  npx skills add {REPO} --skill {' --skill '.join(SKILLS)}", file=sys.stderr)
+        return 127
+
+
+def _init_skills(argv: list[str]) -> int:
+    """スキルを clone から入れる。**GitHub を経由しない。**
+
+    手元の `cw` と同じソースツリーから入るので、CLI とスキルの版がずれない。
+    """
+    parser = argparse.ArgumentParser(prog="cw init skills",
+                                     description="Claude Code のスキルを入れる")
+    where = parser.add_mutually_exclusive_group()
+    where.add_argument("--project", dest="scope", action="store_const", const="-p",
+                       help="いまのディレクトリの .claude/skills/ へ入れる (既定)")
+    where.add_argument("--global", dest="scope", action="store_const", const="-g",
+                       help="~/.claude/skills/ へ入れて、どのプロジェクトからも使う")
+    parser.add_argument("--h3", action="store_true",
+                        help="MiniMax 公式の h3-prompt-writing も入れる (GitHub から)")
+    parser.set_defaults(scope="-p")
+    args = parser.parse_args(argv)
+
+    scope = [args.scope]
+    skills = [arg for name in SKILLS for arg in ("--skill", name)]
+    rc = _npx("add", str(REPO), *skills, "-y", *scope)
+    if rc != 0 or not args.h3:
+        return rc
+    repo, skill = H3_SKILL
+    _section("MiniMax 公式のスキルを入れます")
+    return _npx("add", repo, "--skill", skill, "-y", *scope)
+
+
+def cmd_init(argv: list[str]) -> int:
+    """初回に要るもの (SSH 鍵・HF トークン) を用意する。
+
+    **手順を README にしか置かない状態をやめる。** 鍵は `docker compose exec` と
+    コンテナ内のパスを知らないと作れず、トークンは置き場を知らないと置けなかった。
+    """
+    if argv and argv[0] in ("-h", "--help", "help"):
+        print(INIT_USAGE, end="")
+        return 0
+    if not argv:
+        return _init_status()
+    action, rest = argv[0], argv[1:]
+    if action == "ssh":
+        return _init_ssh(rest)
+    if action == "hf":
+        return _init_hf(rest)
+    if action == "skills":
+        return _init_skills(rest)
+    raise SystemExit("cw init [ssh | hf | skills]")
+
+
 def cmd_key(argv: list[str]) -> int:
     """アクセスキーの発行・一覧・失効と、ランタイムへの反映。
 
@@ -509,6 +681,7 @@ COMMANDS = {
     "status": cmd_status,
     "sessions": cmd_sessions,
     "watch": cmd_watch,
+    "init": cmd_init,
     "auth": cmd_auth,
     "tunnel": cmd_tunnel,
     "stop": cmd_stop,
