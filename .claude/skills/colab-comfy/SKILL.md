@@ -159,6 +159,9 @@ GPU は既定の `L4` でよい。A100 が要るのは `ltx-2.3` の fp8 だけ(
   `src/scripts/colab.sh`(中身は `docker compose exec`)経由。
 - **`docker compose restart tunnel` を連打しない。** 1ランタイムにつき `colab ssh` は
   1本だけで、叩き直すと `Already-active SSH session (HTTP 429)` で締め出される。
+- **セッションが無いのに `tunnel` を上げたままにしない。** ProxyCommand の
+  `colab ssh -s comfy` がその名前でランタイムを確保する(実測では CPU ランタイム)。
+  止めるときは `colab.sh stop` と一緒に `docker compose stop tunnel` まで行う。
 - **`.colab/` の中身をコミット・表示しない。** OAuth トークン・SSH 鍵・API キー・
   HF トークンが入っている。
 

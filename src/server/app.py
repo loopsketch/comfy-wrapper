@@ -18,6 +18,7 @@ import random
 import secrets
 import shutil
 import subprocess
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -27,6 +28,12 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from PIL import Image
+
+# server/ は sys.path の先頭 (uvicorn の cwd) なので隣は素で読めるが、lib/ は
+# 一つ上にある。ランタイムでも手元でも同じ形で読めるように src/ を足す。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import model_catalog  # noqa: E402
 
 import h3_workflows
 import ltx25_workflows
@@ -44,6 +51,7 @@ from models import (
     HealthResponse,
     InfoResponse,
     JobResponse,
+    ModelsResponse,
     PostprocessRequest,
     PostprocessResponse,
 )
@@ -347,6 +355,29 @@ async def info(_: str = Depends(require_key)) -> InfoResponse:
         models=h3_workflows.DEFAULT_MODELS,
         jobs=len(jobs),
     )
+
+
+@app.get("/v1/models", response_model=ModelsResponse)
+async def models(_: str = Depends(require_key)) -> ModelsResponse:
+    """どのモデルで何ができるかを返す。
+
+    **呼ぶ側がモデル表を自前で持たなくて済むようにするための口。** 解像度・音声の有無・
+    スループットを写して持つと、こちらにモデルを足したときに向こうは気づけない。
+
+    `ready`(ウェイトが実際に載っているか)はランタイムの状態なので、ComfyUI が
+    起きていなければ null にして `ready_known=false` を返す。**カタログ本体は
+    ランタイムが無くても答えられる**必要がある。見積もりは GPU を確保する前に
+    出せなければ意味がないため。
+    """
+    entries = model_catalog.catalog()
+    ready: dict[str, bool] = {}
+    known = False
+    if await comfy.ready():
+        ready = await _video_ready()
+        known = True
+    for entry in entries:
+        entry["ready"] = ready.get(entry["id"]) if known else None
+    return ModelsResponse(models=entries, ready_known=known)
 
 
 def _plan(req: GenerateRequest, aspect: str) -> tuple[int, int, int, int]:

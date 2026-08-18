@@ -155,3 +155,17 @@ class InfoResponse(BaseModel):
     vram_free_mb: int | None
     models: dict[str, str]
     jobs: int
+
+
+class ModelsResponse(BaseModel):
+    """どのモデルで何ができるかの一覧。
+
+    **呼ぶ側にこの表を写させないために在る。** 中身は lib/model_catalog.py が持ち、
+    ここでは形だけ決める。項目を足すことはあっても消さない前提なので、entry は
+    dict のまま通す(呼ぶ側が知らないキーを無視できるようにする)。
+    """
+
+    models: list[dict]
+    # ウェイトの有無を合成できたか。ComfyUI が起きていないと分からないので、
+    # false のとき各 entry の ready は null になる
+    ready_known: bool

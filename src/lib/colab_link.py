@@ -193,6 +193,13 @@ def request(
         except urllib.error.URLError as exc:
             error = LinkError(f"{endpoint} に接続できません ({exc.reason})。{diagnose()}")
             retriable = True
+        except OSError as exc:
+            # **URLError の後に置くこと**(URLError は OSError の派生)。
+            # トンネルは張れているのにランタイム側で誰も待っていないと、ssh は接続を
+            # 受けてから reset する。これは URLError に包まれないので、ここで拾わないと
+            # 生の ConnectionResetError が出て、次の一手が分からないまま終わる
+            error = LinkError(f"{endpoint} との接続が切れました ({exc})。{diagnose()}")
+            retriable = True
         last = error
         if not retriable or attempt == retries:
             break
@@ -214,3 +221,6 @@ def health(endpoint: str, timeout: float = 30.0) -> dict:
         raise LinkError(f"/health が {exc.code} を返しました") from exc
     except urllib.error.URLError as exc:
         raise LinkError(f"{endpoint} に接続できません ({exc.reason})。{diagnose()}") from exc
+    except OSError as exc:
+        # URLError の後に置くこと。ランタイム側に誰も居ないと ssh が接続後に reset する
+        raise LinkError(f"{endpoint} との接続が切れました ({exc})。{diagnose()}") from exc

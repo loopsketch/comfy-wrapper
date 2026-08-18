@@ -132,6 +132,11 @@ docker compose stop tunnel
 
 GPU の稼働時間で課金されるので、止まっていることを必ず確かめてください。
 
+**`tunnel` を上げっぱなしにしない。** セッションが無い状態で常駐させると、
+ProxyCommand の `colab ssh -s comfy` がその名前のランタイムを確保します(実測では
+CPU ランタイムなのでコンピューティングユニットは減りませんが、意図しない確保です)。
+使い終わったら `docker compose stop tunnel` まで含めて片付けてください。
+
 ### 無人で1本流す
 
 `colab_run.sh` は確保 → 構築 → 実行 → 停止 をまとめて流し、途中で何が起きても最後に必ず
@@ -191,6 +196,54 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
   -H "Content-Type: application/json" \
   -d '{"task":"t2v","prompt":"rain on neon streets","duration":5,"aspect":"16x9"}'
 ```
+
+## 他のプロジェクトから使う
+
+**このリポジトリは1台に1つだけ動かし、他のプロジェクトはコピーせずに HTTP で頼む。** `.colab/` の OAuth トークン・SSH 鍵・セッション台帳は1つしか持てず、
+複製すると `Already-active SSH session (HTTP 429)` やアイドル刈り取りの取り合いになります。
+呼ぶ側に `colab` / `tunnel` サービスを持たせないでください。
+
+共有ネットワークを1本張ると、宛先が `http://tunnel:8000` のまま解決します。ホストに
+ポートを晒さずに済み、呼ぶ側はコードも宛先の設定も変えなくて済みます。呼ぶ側の
+compose に、このリポジトリと**同じ宣言**を置くだけです。
+
+```yaml
+# 呼ぶ側の docker-compose.yml
+services:
+  app:
+    networks: [default, comfy]
+networks:
+  comfy:
+    name: comfy-net
+```
+
+**`external: true` にしないでください。** external にすると、まだネットワークが無い環境で
+compose ごと起動に失敗します。呼ぶ側は生成と関係ない処理まで動かせなくなり、こちらも
+単体で立ち上がらなくなります。名前を固定した非 external なら、先に上がった方が作り、
+あとから来た方がそれに乗ります。事前に `docker network create` を打つ必要もありません。
+
+キーは**プロジェクトごとに発行**してください。`.colab/colab-api-key` を共有すると、
+片方だけ失効させられなくなります。
+
+```bash
+docker compose exec -T colab python src/scripts/genkey.py \
+  --keys /app/.colab/comfy-keys.json issue --name <プロジェクト名> --env
+docker compose exec -T colab python src/scripts/genkey.py \
+  --keys /app/.colab/comfy-keys.json list
+```
+
+出た `COLAB_API_KEY=...` を呼ぶ側の `.env` に置きます。**発行したら次に
+`colab_key.sh` を流したときにランタイムへ反映されます**(送るのはハッシュだけ)。
+
+呼ぶ側が知っておく必要があるのは3つだけです。
+
+- 投入は 202 で返り、生成は裏で走る。**届いていれば投げ直さない**(二重生成は
+  GPU 時間をそのまま捨てる)
+- ジョブ台帳はサーバのメモリにしかない。ランタイムを止めると回収できない
+- ランタイムの確保と停止は自前生成サーバ側の仕事。`/health` に届かなければ「いま動いていない」
+
+実例は [music-video-creator2](https://github.com/loopsketch/music-video-creator2) です
+(元はこのコードを内部に抱えていて、自前生成サーバとして切り出した側)。
 
 ## モデル
 
@@ -252,6 +305,7 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
 |---|---|---|
 | GET | `/health` | 認証不要。トンネル疎通と、モデルごとのウェイトの有無 |
 | GET | `/v1/info` | GPU 名・VRAM・使用中のモデル |
+| GET | `/v1/models` | どのモデルで何ができるか。呼ぶ側がモデル表を持たなくて済むようにする |
 | POST | `/v1/generate` | 動画の生成を投入。202 で `job_id` を返す |
 | POST | `/v1/images/generate` | 静止画の生成を投入 |
 | POST | `/v1/postprocess` | 生成済み動画の仕上げ(補間・拡大)を投入 |
@@ -323,6 +377,13 @@ GPU も Colab のランタイムもネットワークも要りません。**課�
   ここが崩れていると ComfyUI は 400 で弾くが、それが分かるのは GPU を確保したあと
 - 宛先・キーの解決、障害の切り分け、リトライの方針(**POST は再送しない** = 二重生成しない)
 - キーストア。保存されるのはハッシュだけで平文は残らないこと、失効が効くこと
+- **ウェイト取得の事前チェック。** 空き容量が足りない回に1ファイルも取りに行かないこと、
+  共用のエンコーダを二重に数えないこと、置き場が ComfyUI の見るフォルダに合っていること。
+  40GB を取り終えてから足りないと分かると、そこまでの課金が丸損になる
+- **止まった取得を殺して取り直す経路。** 子プロセスを実際に固めて確かめる。Xet の停止は
+  例外を上げないので、try/except のテストでは再現にならない
+- **OAuth の延長。** 無人のループから呼ばれるので、どんな失敗でも例外を投げないこと。
+  再認証が要る状態と、こちらの都合で判定できない状態を混ぜないこと
 
 ## ディレクトリ構成
 
