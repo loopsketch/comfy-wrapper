@@ -23,6 +23,8 @@ GET  /v1/jobs/{id} ->  状態
 GET  /v1/jobs/{id}/video -> mp4
 ```
 
+設計判断・実測記録・モデルの選び方・つまずいたときの対処は [docs/](docs/) にあります。
+
 ## 特徴
 
 - **複数モデルを同じ API で扱える。** 動画は MiniMax H3 / Wan2.2 (14B MoE・TI2V-5B・S2V) /
