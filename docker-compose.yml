@@ -71,3 +71,21 @@ services:
     # 待ちを入れた張り直しは colab_tunnel.sh が行う。
     entrypoint: ["/app/src/scripts/colab_tunnel.sh"]
     restart: unless-stopped
+    # default はこの compose 内の client 用、comfy は他プロジェクト用。
+    # 明示すると default が暗黙で付かなくなるので、両方書く。
+    networks: [default, comfy]
+
+# 他プロジェクトから生成だけを頼むための共有ネットワーク。参加すると宛先が
+# http://tunnel:8000 のまま解決するので、呼ぶ側はコードも .env も変えなくてよい。
+# ホストにポートを晒さずに済むのも、この経路を選ぶ理由。
+#
+# **external にしない。** external だと comfy-net が無い環境で compose ごと起動に
+# 失敗し、このリポジトリ単体で動かせなくなる。名前を固定した非 external にしておけば、
+# 先に上がった方が作り、あとから来た方がそれに乗る(呼ぶ側も同じ宣言を置く)。
+#
+# **自前生成サーバはこのリポジトリのものだけを動かす。** .colab/ の OAuth トークン・SSH 鍵・
+# セッション台帳は1つしか持てず、複製すると Already-active SSH session (HTTP 429) や
+# アイドル刈り取りの取り合いになる。呼ぶ側は colab / tunnel を自前で持たないこと。
+networks:
+  comfy:
+    name: comfy-net

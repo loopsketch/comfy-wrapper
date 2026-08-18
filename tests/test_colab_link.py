@@ -191,6 +191,21 @@ class RequestTest(unittest.TestCase):
                 colab_link.request("http://127.0.0.1:1", "k", "GET", "/health")
         self.assertIn("接続できません", str(cm.exception))
 
+    def test_connection_reset_explains(self):
+        """トンネルは張れているが、ランタイム側で誰も 8000 を待っていない状態。
+
+        ssh は接続を受けてから reset するので、これは URLError に包まれない。
+        拾い損ねると生の ConnectionResetError が出て、次の一手が分からずに終わる。
+        """
+        def _reset(*args, **kwargs):
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+        with mock.patch.object(colab_link, "RETRIES", 1), \
+                mock.patch.object(colab_link.urllib.request, "urlopen", _reset):
+            with self.assertRaises(colab_link.LinkError) as cm:
+                colab_link.request("http://tunnel:8000", "k", "GET", "/health")
+        self.assertIn("接続が切れました", str(cm.exception))
+
 
 class HealthTest(unittest.TestCase):
     def test_health(self):
@@ -203,6 +218,16 @@ class HealthTest(unittest.TestCase):
             with self.assertRaises(colab_link.LinkError) as cm:
                 colab_link.health(server.url)
         self.assertIn("到達できません", str(cm.exception))
+
+    def test_connection_reset_is_named(self):
+        """生成を投げる前の疎通確認でも、reset を素通しさせない。"""
+        def _reset(*args, **kwargs):
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+        with mock.patch.object(colab_link.urllib.request, "urlopen", _reset):
+            with self.assertRaises(colab_link.LinkError) as cm:
+                colab_link.health("http://tunnel:8000")
+        self.assertIn("接続が切れました", str(cm.exception))
 
 
 if __name__ == "__main__":

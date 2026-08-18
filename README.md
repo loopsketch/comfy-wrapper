@@ -137,6 +137,11 @@ docker compose stop tunnel
 
 Billing is per GPU-hour, so confirm the session is really gone.
 
+**Do not leave `tunnel` running.** With no session present, its ProxyCommand
+(`colab ssh -s comfy`) allocates a runtime under that name — observed as a CPU runtime,
+so no compute units are spent, but it is an allocation you did not ask for. Include
+`docker compose stop tunnel` when you finish.
+
 ### Unattended runs
 
 `colab_run.sh` does allocate → build → run → stop in one command, and always stops the
@@ -199,6 +204,68 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
   -H "Content-Type: application/json" \
   -d '{"task":"t2v","prompt":"rain on neon streets","duration":5,"aspect":"16x9"}'
 ```
+
+## Using it from another project
+
+**Run one instance of this repository per machine, and have other projects ask it over
+HTTP instead of vendoring it.** The OAuth token, SSH key and session ledger in
+`.colab/` can only exist once; a second copy fights the first for the runtime and you
+get `Already-active SSH session (HTTP 429)` or an idle-pruned session. Do not give the
+calling project its own `colab` / `tunnel` services.
+
+One shared network keeps the endpoint resolving as `http://tunnel:8000`, so the caller
+changes neither its code nor its configuration, and no port is exposed on the host. The
+caller just repeats the **same declaration** this repository uses.
+
+```yaml
+# the caller's docker-compose.yml
+services:
+  app:
+    networks: [default, comfy]
+networks:
+  comfy:
+    name: comfy-net
+```
+
+**Do not mark it `external: true`.** An external network that does not exist yet makes
+Compose fail to start at all — the caller could no longer run anything, generation-related
+or not, and neither could this repository on its own. With a fixed name and no `external`,
+whichever side comes up first creates it and the other joins. No `docker network create`
+step is needed.
+
+Issue **one key per project** — sharing `.colab/colab-api-key` means you cannot revoke
+one caller without breaking the others.
+
+```bash
+docker compose exec -T colab python src/scripts/genkey.py \
+  --keys /app/.colab/comfy-keys.json issue --name <project> --env
+docker compose exec -T colab python src/scripts/genkey.py \
+  --keys /app/.colab/comfy-keys.json list
+```
+
+Put the printed `COLAB_API_KEY=...` in the caller's `.env`. The runtime picks the new
+key up the next time you run `colab_key.sh` (only the hash is uploaded).
+
+**Read the model table from `GET /v1/models` instead of copying it.** It returns
+resolutions, audio support, throughput and weight sizes. A copy goes stale the moment a
+model is added here — that is exactly what happened with `ltx-2.5`, which this repository
+supported while the caller rejected it as unknown.
+
+Only `ready` (are the weights actually present) is runtime state: with ComfyUI down it is
+null and `ready_known` is false. **The catalog itself answers without a runtime**, but the
+API only exists on the runtime, so cache it on your side if you use it for cost estimates —
+those need to work *before* a GPU is claimed.
+
+The caller only needs to know three things:
+
+- Submission returns 202 and generation runs in the background. **Do not resubmit
+  something that got through** — a duplicate generation throws away GPU time.
+- The job ledger lives only in the server's memory. Stop the runtime and it is gone.
+- Claiming and stopping the runtime is this server's job. If `/health` does not
+  answer, it simply is not running right now.
+
+[music-video-creator2](https://github.com/loopsketch/music-video-creator2) is a worked
+example — it used to carry this code inside it, and is the project this was extracted from.
 
 ## Models
 
@@ -263,6 +330,7 @@ Every endpoint requires `Authorization: Bearer <key>` except `/health`.
 |---|---|---|
 | GET | `/health` | No auth. Tunnel liveness and per-model weight readiness |
 | GET | `/v1/info` | GPU name, VRAM, loaded model |
+| GET | `/v1/models` | What each model can do, so callers need no model table of their own |
 | POST | `/v1/generate` | Queue a video job. Returns 202 with `job_id` |
 | POST | `/v1/images/generate` | Queue a still-image job |
 | POST | `/v1/postprocess` | Queue interpolation / upscaling of an existing mp4 |
@@ -336,6 +404,13 @@ without noticing until a runtime is already billing:
 - endpoint/key resolution, failure diagnosis, and the retry policy (a POST is never
   retried, so a generation is never submitted twice)
 - the key store: hashes are persisted, plaintext never is, and revocation holds
+- **pre-flight checks before fetching weights**: not fetching a single file when the disk
+  is short, not counting a shared encoder twice, and landing files in the folders ComfyUI
+  actually looks at — finding out after 40GB means all of it was billed for nothing
+- **killing and restarting a stalled download**, verified by genuinely hanging a child
+  process: a Xet stall raises no exception, so a try/except test would not reproduce it
+- **OAuth renewal**: it runs from an unattended loop, so it must never raise, and it must
+  not conflate "needs reauth" with "could not tell"
 
 ## Repository layout
 
