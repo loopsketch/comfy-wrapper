@@ -40,7 +40,7 @@ FLOW_FILE = Path("/app/.colab/.auth-flow.json")
 # colab-cli が読む OAuth クライアント設定。無ければパッケージ同梱のものへ落ちる
 CLIENT_CONFIG = HOME / ".colab-cli-oauth-config.json"
 
-# 期限までこれを切ったら更新する。**見張りの確認間隔より長く取る。** 同じにすると
+# 期限までこれを切ったら更新する。**監視の確認間隔より長く取る。** 同じにすると
 # 「まだ余裕がある」と見送った次の確認が期限後になり、切れた状態を作ってしまう
 REFRESH_MARGIN_MIN = 35.0
 

@@ -17,7 +17,7 @@ cw sessions    # サーバに現物を問い合わせる
 | 静止画は通るのに動画が 503 | そのモデルのウェイトが載っていない。`/health` の `video_ready` |
 | 400 `value_not_in_list` | 構築したモデルと `--model` がずれている |
 | 生成中に CUDA out of memory | `megapixels` と `duration` を下げる。`upscale_model` を外す |
-| `cw sessions` に `[?]` が残る | 一覧から外れた孤児。`cw stop --orphans` |
+| `cw sessions` に `[?]` が残る | 管理から外れた孤児。`cw stop --orphans` |
 
 ## 確保したのに CPU ランタイムだった
 
@@ -53,9 +53,9 @@ GGUF のウェイトは ComfyUI 本体だけでは読めず、構築が `custom_
 このときは clone が固まっている間ディスク使用量が 48.4GB から動かなくなり、8分の無進捗で
 監視が自動停止させた。上限60分まで回れば18円になっていたところが3円で済んでいる。
 
-## 一覧から外れた孤児が残る
+## 管理から外れた孤児が残る
 
-`cw sessions` に `[?]` で始まる名前なしのセッションが並ぶことがある。一覧から外れたもので、
+`cw sessions` に `[?]` で始まる名前なしのセッションが並ぶことがある。管理から外れたもので、
 CPU ランタイムなら CU は減らないが、`cw stop -s <名前>` では引けない。
 
 ```bash

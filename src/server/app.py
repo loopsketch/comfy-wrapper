@@ -239,7 +239,7 @@ async def _video_ready() -> dict[str, bool]:
 
 
 def _prune_jobs() -> None:
-    """完了済みジョブの台帳を新しい方から MAX_KEPT_JOBS 件だけ残す。
+    """完了済みジョブの記録を新しい方から MAX_KEPT_JOBS 件だけ残す。
 
     生成された mp4 は消さない。出力先を Drive に向けている場合、
     ここで消すと成果物を失うため。古い動画の整理は運用側に任せる。

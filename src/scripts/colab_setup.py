@@ -10,7 +10,7 @@ ComfyUI の導入 → 依存のインストール → H3 ウェイトの取得 �
 確認は colab_setup_status.py を流す。
 
 **取得のあと、そのままサーバまで起動する。** 人が colab_serve.py を打つまでの間は
-取得も生成も起動も走っておらず、見張りがアイドルと見て自動停止させてしまう
+取得も生成も起動も走っておらず、監視がアイドルと見て自動停止させてしまう
 。人が見ていない前提なので、待ちを作らない。
 """
 
@@ -122,7 +122,7 @@ rm -rf /root/.cache/huggingface/xet {COMFY}/models/.cache
 df -h /content | tail -1
 touch {LOGS}/setup.done
 
-# 続けてサーバを起こす。ここで人待ちにすると見張りがアイドルと見て止めてしまう
+# 続けてサーバを起こす。ここで人待ちにすると監視がアイドルと見て止めてしまう
 echo "[5/5] ComfyUI と API を起動"
 python {WORK}/scripts/colab_serve.py
 echo "完了"

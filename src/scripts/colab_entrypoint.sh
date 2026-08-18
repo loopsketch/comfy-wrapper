@@ -4,8 +4,8 @@
 #   docker compose up -d colab          常駐(引数なし)。延長ループが回る
 #   docker compose run --rm colab ARGS  ARGS をそのまま実行する(ループは回さない)
 #
-# **延長ループは常駐でしか回さない。** 見張り (colab_keepalive_watch.py) も認証を
-# 見るが、見張りはセッションがある間しか生きていない。認証が切れるのは半日で、
+# **延長ループは常駐でしか回さない。** 監視 (colab_keepalive_watch.py) も認証を
+# 見るが、監視はセッションがある間しか生きていない。認証が切れるのは半日で、
 # その半日はたいてい何も走っていない。そこを埋めるのがこのループ。
 #
 #   COLAB_AUTH_LOOP_MINUTES  確認の間隔(既定 30分)。0 でループを止める

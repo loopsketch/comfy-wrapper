@@ -1,7 +1,7 @@
-"""確保されたまま台帳から外れたランタイムを解放する。**colab コンテナで動かす。**
+"""確保されたまま管理から外れたランタイムを解放する。**colab コンテナで動かす。**
 
-`colab stop -s <名前>` は台帳にあるセッションしか止められない。接続に失敗した回や
-台帳を作り直した回は、割り当てだけがサーバ側に残る。`colab sessions` には
+`colab stop -s <名前>` は一覧にあるセッションしか止められない。接続に失敗した回や
+一覧を作り直した回は、割り当てだけがサーバ側に残る。`colab sessions` には
 `[?]` で始まる名前なしとして出てきて、**放っておくと課金が続く**。
 
     python src/scripts/colab_unassign.py            名前の無い割り当てだけ解放する
@@ -18,7 +18,7 @@ from colab_cli.common import state
 def main() -> int:
     parser = argparse.ArgumentParser(description="確保されたままの割り当てを解放する")
     parser.add_argument("--all", action="store_true",
-                        help="台帳にあるセッションも含めてすべて解放する")
+                        help="一覧にあるセッションも含めてすべて解放する")
     parser.add_argument("--dry-run", action="store_true", help="何を解放するかだけ出す")
     args = parser.parse_args()
 

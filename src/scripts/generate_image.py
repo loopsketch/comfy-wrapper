@@ -11,10 +11,10 @@
     cw jobs
 
 既定では完成まで待って png を書き出す(Z-Image で数十秒)。まとめて投げたいときは
---no-wait で投入だけして、status で回収する。**ジョブ台帳はサーバのメモリにしかない**
+--no-wait で投入だけして、status で回収する。**ジョブの記録はサーバのメモリにしかない**
 ので、ランタイムを止めると回収できなくなる。止める前に status を通すこと。
 
-**出力は CWD 相対、台帳はリポジトリ。** --out は呼んだ場所からの相対で受け、台帳へは
+**出力は CWD 相対、記録はリポジトリ。** --out は呼んだ場所からの相対で受け、記録へは
 絶対パスで書く。別のディレクトリから cw jobs を叩いても同じ場所へ回収できる。
 """
 
@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import colab_link
 
-# 台帳は呼ぶ側のプロジェクトを汚さないようリポジトリ側に集約する
+# 記録は呼ぶ側のプロジェクトを汚さないようリポジトリ側に集約する
 STATE = colab_link.JOBS_DIR / "images.json"
 TERMINAL = ("succeeded", "failed", "canceled")
 
@@ -108,7 +108,7 @@ def cmd_submit(args) -> int:
 
     job = json.loads(_req("POST", "/v1/images/generate", payload))
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    # 台帳に相対パスを書くと、別の CWD から回収したときに違う場所へ落ちる
+    # 記録に相対パスを書くと、別の CWD から回収したときに違う場所へ落ちる
     out = (args.out or Path(f"{stamp}_{job['model']}_{job['job_id']}.png")).resolve()
 
     print(f"投入した: {job['job_id']} / {job['model']} / "
@@ -142,7 +142,7 @@ def cmd_submit(args) -> int:
         print(f"書き出した: {path} ({path.stat().st_size / 1024:.0f}KB, {elapsed:.0f}秒)")
         return 0
 
-    # **待ちを打ち切っても生成は裏で走っている。** 台帳に残して status で拾えるようにする
+    # **待ちを打ち切っても生成は裏で走っている。** 記録に残して status で拾えるようにする
     jobs = _load()
     jobs.append({
         "job_id": job["job_id"], "model": job["model"], "prompt": args.prompt,
@@ -164,7 +164,7 @@ def cmd_status(args) -> int:
         try:
             state = json.loads(_req("GET", f"/v1/jobs/{entry['job_id']}"))
         except colab_link.LinkError as exc:
-            # セッションを立て直すと台帳ごと消える。1件で全体を落とさない
+            # セッションを立て直すと記録ごと消える。1件で全体を落とさない
             print(f"{entry['job_id']}: 取得できません ({exc})")
             remaining.append(entry)
             continue
