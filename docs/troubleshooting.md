@@ -1,10 +1,10 @@
 # つまずいたときは
 
 実際に踏んだものだけを並べてある。失った時間はそのまま課金になるので、まず
-「いま GPU を掴んでいるか」を確かめてから原因を追う。
+「いま GPU を掴んでいるか」を確かめてから原因を追いたい。
 
 ```bash
-cw status      # compose / セッション / 見張り / 疎通
+cw status      # compose / セッション / 監視 / 疎通
 cw sessions    # サーバに現物を問い合わせる
 ```
 
@@ -17,7 +17,7 @@ cw sessions    # サーバに現物を問い合わせる
 | 静止画は通るのに動画が 503 | そのモデルのウェイトが載っていない。`/health` の `video_ready` |
 | 400 `value_not_in_list` | 構築したモデルと `--model` がずれている |
 | 生成中に CUDA out of memory | `megapixels` と `duration` を下げる。`upscale_model` を外す |
-| `cw sessions` に `[?]` が残る | 台帳から外れた孤児。`cw stop --orphans` |
+| `cw sessions` に `[?]` が残る | 一覧から外れた孤児。`cw stop --orphans` |
 
 ## 確保したのに CPU ランタイムだった
 
@@ -35,8 +35,8 @@ Cannot access gated repo for url https://huggingface.co/Lightricks/LTX-2.5/resol
 Access to model Lightricks/LTX-2.5 is restricted and you are not in the authorized list.
 ```
 
-問題は、`download_video_models.py` の `fetch()` が失敗を `[warn]` にして先へ進むこと。
-構築は「完了しました」と言って終わり、ウェイトが1つも無いままサーバが立ち上がる。生成の
+厄介なのは、`download_video_models.py` の `fetch()` が失敗を `[warn]` にして先へ進むこと。
+構築は「完了しました」と言って終わり、ウェイトが1つもないままサーバが立ち上がる。生成の
 直前まで気づけず、L4 を10分ほど掴んだ (2026-08-17、約3円)。
 
 構築の後は `GET /health` の `video_ready` を見れば一発で分かる。同意はモデルページの
@@ -51,12 +51,12 @@ GGUF のウェイトは ComfyUI 本体だけでは読めず、構築が `custom_
 取り直した2回目は問題なく通った。再試行以外に手はない。
 
 このときは clone が固まっている間ディスク使用量が 48.4GB から動かなくなり、8分の無進捗で
-見張りが自動停止させた。上限60分まで回れば18円になっていたところが3円で済んでいる。
+監視が自動停止させた。上限60分まで回れば18円になっていたところが3円で済んでいる。
 
-## 台帳から外れた孤児が残る
+## 一覧から外れた孤児が残る
 
-`cw sessions` に `[?]` で始まる名前なしのセッションが並ぶことがある。CPU ランタイムなら
-CU は減らないが、`cw stop -s <名前>` では引けない。
+`cw sessions` に `[?]` で始まる名前なしのセッションが並ぶことがある。一覧から外れたもので、
+CPU ランタイムなら CU は減らないが、`cw stop -s <名前>` では引けない。
 
 ```bash
 cw stop --orphans                                    # 名前なしのものを解放する
@@ -102,9 +102,9 @@ docker compose logs --tail 50 tunnel
 
 ## 放置するとランタイムが止まる
 
-Colab はアイドルでランタイムを刈る(おおむね90分)。サーバは `subprocess` で動くので
-起動そのものはすぐ終わり、Colab からは何も実行していないように見える。`colab` サービスを
-動かしたままにして、keep-alive デーモンを生かしておくこと。
+Colab はアイドルでランタイムを刈る(おおむね90分)。サーバは `subprocess` で動くので起動
+そのものはすぐ終わり、Colab からは何も実行していないノートブックに見えてしまう。`colab`
+サービスを動かしたままにして、keep-alive デーモンを生かしておくこと。
 
 `docker compose run --rm` でコマンドを流すと、返った瞬間にコンテナごとデーモンが消える。
 `docker compose up -d colab` で常駐させる。
