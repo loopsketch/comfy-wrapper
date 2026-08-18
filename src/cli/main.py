@@ -9,7 +9,7 @@
   `src/scripts/` の `main()` をこのプロセスで呼ぶ。サブプロセスを挟まないので、
   エラーもトレースバックもそのまま出る。パスは CWD 相対のまま通る。
 - **運用系** (`up` / `run` / `stop` / `status` / `sessions` / `watch` / `auth` /
-  `tunnel` / `key`) は
+  `tunnel` / `logs` / `key`) は
   `cwd=<リポジトリ>` で既存の `src/scripts/*.sh` を実行する。**`docker compose` の
   露出はここで止める。**
 
@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 
 
@@ -77,7 +78,8 @@ cw — Colab の GPU 上の ComfyUI に生成を頼む
   cw init [ssh|hf|skills]                  鍵・トークン・スキルを用意する
   cw auth [login [--code <code>]]          Colab の認証を見る・入れ直す
   cw tunnel up|restart|stop|logs           トンネルだけを扱う (セッションは触らない)
-  cw stop [--orphans]                      ランタイムとトンネルを畳む
+  cw logs [setup|api|comfyui] [--save]     Colab 側のログを読む (止めると消えます)
+  cw stop [--orphans] [--no-logs]          ランタイムとトンネルを畳む
   cw key issue|list|revoke|push            アクセスキー
 
 各コマンドの詳しい引数は `cw <コマンド> --help` で出ます。
@@ -431,15 +433,218 @@ def cmd_watch(argv: list[str]) -> int:
     return _sh("colab_watch.sh", *argv)
 
 
+# --- Colab 側のログ ---------------------------------------------------------
+
+# ランタイムを止めると /content ごと消える。**止める前に読める口がないと、その回に
+# 分かったことがそのまま失われる。** 落ちた理由は落ちたセッションの中にしか無い
+LOG_NAMES = ("setup", "api", "comfyui")
+REMOTE_LOGS = "/content/logs"
+# 回収先。監視の自動停止が使う works/.rescue/<セッション>/logs/ に合わせる
+RESCUE_ROOT = REPO / "works" / ".rescue"
+# colab exec の待ち。**監視も30秒ごとに同じ口を叩く。** 重なった回はここで待たされる
+LOGS_TIMEOUT = 120.0
+# 1本あたりの持ち帰り上限。setup.log は取得の進捗で膨らむ
+LOGS_MAX_BYTES = 4 * 1024 * 1024
+LOGS_TAIL = 200
+
+
+def _colab_code(code: str, session: str, timeout: float = LOGS_TIMEOUT) -> tuple[str | None, str]:
+    """Colab のカーネルで Python を流し、標準出力を返す。返すのは (出力, 失敗の理由)。
+
+    **`colab exec` はコマンド引数を取らない。** `-f` か標準入力で Python を受けるので、
+    シェルではなくコードを渡す。
+    """
+    path = SCRIPTS / "colab.sh"
+    if not path.exists():
+        return None, f"スクリプトがありません: {path}"
+    cmd = [str(path)] if os.access(path, os.X_OK) else ["bash", str(path)]
+    sys.stdout.flush()
+    try:
+        r = subprocess.run([*cmd, "exec", "-s", session], input=code, cwd=REPO,
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, (f"colab exec が {timeout:.0f}秒 で返りませんでした "
+                      "(監視が同じ口を使っています。少し置いてからもう一度)")
+    if r.returncode != 0:
+        tail = [ln.strip() for ln
+                in ((r.stderr or "") + "\n" + (r.stdout or "")).splitlines() if ln.strip()]
+        return None, tail[-1] if tail else f"colab exec が rc={r.returncode} で返りました"
+    return r.stdout, ""
+
+
+def _logs_code(names: list[str], tail: int, token: str) -> str:
+    """Colab 側で走らせるコード。区切りの token は毎回作り直す(本文と衝突させない)。"""
+    return (
+        "from pathlib import Path\n"
+        f"root = Path({REMOTE_LOGS!r})\n"
+        f"names, tail, limit, token = {names!r}, {int(tail)!r}, {LOGS_MAX_BYTES!r}, {token!r}\n"
+        "for name in names:\n"
+        "    p = root / (name + '.log')\n"
+        "    if not p.exists():\n"
+        "        print(token, 'MISSING', name)\n"
+        "        continue\n"
+        "    data = p.read_bytes()\n"
+        "    size = len(data)\n"
+        "    text = data[-limit:].decode('utf-8', 'replace')\n"
+        "    if tail:\n"
+        "        text = '\\n'.join(text.splitlines()[-tail:])\n"
+        "    print(token, 'BEGIN', name, size)\n"
+        "    print(text)\n"
+        "    print(token, 'END', name)\n"
+    )
+
+
+def _split_logs(out: str, token: str) -> tuple[dict[str, tuple[str, int]], list[str]]:
+    """区切りの間だけを本文として拾う。colab-cli の前後の行を混ぜない。
+
+    **閉じの区切りが来なかったものは捨てる。** 途中で切れた出力を保存すると、半分の
+    ログを全文だと思って読むことになる。取れなかったと分かるほうがよい。
+    """
+    found: dict[str, tuple[str, int]] = {}
+    missing: list[str] = []
+    name, size, body = None, 0, []
+    for line in out.splitlines():
+        parts = line.split()
+        if parts[:1] == [token] and len(parts) >= 3:
+            kind = parts[1]
+            if kind == "BEGIN":
+                name, size, body = parts[2], int(parts[3]), []
+            elif kind == "END" and name:
+                found[name] = ("\n".join(body), size)
+                name = None
+            elif kind == "MISSING":
+                missing.append(parts[2])
+            continue
+        if name:
+            body.append(line)
+    return found, missing
+
+
+def _fetch_logs(names: list[str], session: str, tail: int) -> tuple[dict, list[str], str]:
+    token = "CWLOG" + uuid.uuid4().hex
+    out, reason = _colab_code(_logs_code(names, tail, token), session)
+    if out is None:
+        return {}, [], reason
+    found, missing = _split_logs(out, token)
+    return found, missing, ""
+
+
+def _save_logs(session: str, names: list[str] | None = None) -> int:
+    """全文を works/.rescue/<セッション>/logs/ へ落とす。
+
+    **止めれば消えるものを、止める前に持ち帰る。** 監視が自分の判断で止めるときは
+    同じ場所へ回収しているので、手で止める回にも同じものが残るようにする。
+    """
+    names = list(names or LOG_NAMES)
+    found, missing, reason = _fetch_logs(names, session, tail=0)
+    if reason:
+        print(f"ログを回収できませんでした: {reason}")
+        return 1
+    dest = RESCUE_ROOT / session / "logs"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, (text, size) in found.items():
+        path = dest / f"{name}.log"
+        path.write_text(text + "\n" if text else "")
+        cut = " (末尾のみ)" if size > LOGS_MAX_BYTES else ""
+        shown = path.relative_to(REPO) if path.is_relative_to(REPO) else path
+        print(f"{shown}  {size / 1024:.0f}KB{cut}")
+    if not found:
+        print(f"{REMOTE_LOGS} に読めるログがありませんでした"
+              + (f" ({', '.join(missing)} は未作成)" if missing else ""))
+    return 0
+
+
+def _list_logs(session: str) -> int:
+    """置いてあるものを並べる。**どれが読めるかを先に見せる。**"""
+    token = "CWLOG" + uuid.uuid4().hex
+    code = (
+        "from datetime import datetime\n"
+        "from pathlib import Path\n"
+        f"root, token = Path({REMOTE_LOGS!r}), {token!r}\n"
+        "for p in sorted(root.glob('*')) if root.exists() else []:\n"
+        "    s = p.stat()\n"
+        "    print(token, 'FILE', p.name, s.st_size,\n"
+        "          datetime.fromtimestamp(s.st_mtime).strftime('%m/%d %H:%M:%S'))\n"
+    )
+    out, reason = _colab_code(code, session)
+    if out is None:
+        print(f"Colab 側のログを読めませんでした: {reason}")
+        return 1
+    rows = [parts[2:] for parts in (line.split() for line in out.splitlines())
+            if parts[:2] == [token, "FILE"]]
+    if not rows:
+        print(f"{REMOTE_LOGS} は空です (まだ何も動いていないか、ランタイムが別)")
+        return 0
+    print(_table(["ファイル", "大きさ", "最終更新"],
+                 [[r[0], f"{int(r[1]) / 1024:.0f}KB", " ".join(r[2:])] for r in rows]))
+    print("\n読むとき:  cw logs setup --tail 100")
+    print("持ち帰る:  cw logs --save      **止めると /content ごと消えます**")
+    return 0
+
+
+LOGS_USAGE = """\
+cw logs                        置いてあるログを並べる
+cw logs setup [--tail 100]     末尾を読む (既定 200行、--tail 0 で全文)
+cw logs --save                 全文を works/.rescue/<セッション>/logs/ へ落とす
+
+読めるのは setup / api / comfyui。**ランタイムを止めると /content ごと消えます。**
+止める前に読んでください (cw stop は畳む前に自動で回収します)。
+"""
+
+
+def cmd_logs(argv: list[str]) -> int:
+    """Colab 側の /content/logs を読む。**止める前に読める口。**"""
+    if argv and argv[0] in ("-h", "--help", "help"):
+        print(LOGS_USAGE, end="")
+        return 0
+    parser = argparse.ArgumentParser(
+        prog="cw logs", description="Colab 側のログを読む (止めると消えます)")
+    parser.add_argument("name", nargs="?", choices=LOG_NAMES,
+                        help="省くと置いてあるものを並べる")
+    parser.add_argument("-s", "--session", default="comfy")
+    parser.add_argument("--tail", type=int, default=LOGS_TAIL,
+                        help=f"末尾の行数 (既定 {LOGS_TAIL}、0 で全文)")
+    parser.add_argument("--save", action="store_true",
+                        help="全文を works/.rescue/<セッション>/logs/ へ落とす")
+    args = parser.parse_args(argv)
+
+    if args.save:
+        return _save_logs(args.session, [args.name] if args.name else None)
+    if not args.name:
+        return _list_logs(args.session)
+
+    found, missing, reason = _fetch_logs([args.name], args.session, args.tail)
+    if reason:
+        print(f"Colab 側のログを読めませんでした: {reason}")
+        return 1
+    if args.name in missing or args.name not in found:
+        print(f"{REMOTE_LOGS}/{args.name}.log はまだありません "
+              "(cw logs で置いてあるものを並べられます)")
+        return 1
+    text, size = found[args.name]
+    head = f"-- {REMOTE_LOGS}/{args.name}.log ({size / 1024:.0f}KB"
+    head += f"、末尾{args.tail}行)" if args.tail else "、全文)"
+    print(head)
+    print(text)
+    return 0
+
+
 def cmd_stop(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="cw stop", description="ランタイムとトンネルを畳む")
     parser.add_argument("-s", "--session", default="comfy")
     parser.add_argument("--orphans", action="store_true",
                         help="名前の無い割り当て ([?] で出るもの) も解放する")
+    parser.add_argument("--no-logs", dest="logs", action="store_false",
+                        help="止める前のログ回収をしない")
     args = parser.parse_args(argv)
 
     _section("監視を止めます")
     _sh("colab_watch.sh", "--stop")
+    # **止めると /content ごと消える。** その回に分かったことを残してから畳む。
+    # 回収に失敗しても止めるほうは続ける (止め損ねると課金だけが続く)
+    if args.logs:
+        _section("止める前にログを回収します")
+        _save_logs(args.session)
     _section("セッションを止めます")
     rc = _sh("colab.sh", "stop", "-s", args.session)
     # **名前が無い割り当ては stop -s では引けない。** 一覧を作り直した回や接続に
@@ -763,6 +968,7 @@ COMMANDS = {
     "init": cmd_init,
     "auth": cmd_auth,
     "tunnel": cmd_tunnel,
+    "logs": cmd_logs,
     "stop": cmd_stop,
     "key": cmd_key,
 }

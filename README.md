@@ -74,7 +74,7 @@ the same tunnel on `http://127.0.0.1:8000`. Neither changes between sessions.
 
 | | |
 |---|---|
-| Host | Linux / macOS / WSL2 with Docker and Compose **v2** (`docker compose`, not `docker-compose`). Port 8000 free (bound to 127.0.0.1 only) |
+| Host | Linux / macOS / WSL2 with Docker and Compose **v2** (`docker compose`, not `docker-compose`). Port 8000 free (published on `0.0.0.0`; a Bearer key is required) |
 | `cw` | Python **3.11+**, installed with `uv` or `pipx`. The package has no dependencies and does not need ffmpeg (`cw post` reads mp4 headers itself; ffprobe is only used for non-mp4 inputs) |
 | Google account | Colab **compute units are required** — a free account cannot allocate a GPU runtime from the CLI |
 | Browser | Once, for the initial OAuth code paste. It may be a browser on a different machine, so headless hosts are fine |
@@ -173,7 +173,7 @@ collects to the right place from any directory.
 cw stop
 ```
 
-Watchdog → session → **ask the server** → tunnel, in that order. A session leaving the
+Watchdog → **collect the logs** → session → **ask the server** → tunnel, in that order. A session leaving the
 local ledger is not the same as the remote runtime stopping, so the last thing printed is
 what the server says. Billing is per GPU-hour: confirm the session is really gone.
 
@@ -181,6 +181,10 @@ If that last listing still shows entries starting with `[?]`, those are allocati
 fell out of the ledger. `cw stop -s <name>` cannot reach them; release them with
 `cw stop --orphans` (that runs `src/scripts/colab_unassign.py`; `--all` folds named
 sessions too).
+
+Before the session goes away, `/content/logs/{setup,api,comfyui}.log` are pulled into
+`works/.rescue/<session>/logs/`. **Stopping the runtime takes `/content` with it**, so
+what that run taught you is saved first. `--no-logs` skips it when you are in a hurry.
 
 **Do not leave `tunnel` running.** With no session present, its ProxyCommand
 (`colab ssh -s comfy`) allocates a runtime under that name — observed as a CPU runtime,
@@ -206,6 +210,17 @@ re-allocate** — that throws away a live runtime and takes a GPU again.
 ```bash
 cw tunnel restart     # up / stop / logs are there too
 ```
+
+Why a run failed is only ever inside that run. **Read it before you stop.**
+
+```bash
+cw logs                    # list what is there
+cw logs setup --tail 100   # read the tail (setup / api / comfyui)
+cw logs --save             # full text into works/.rescue/<session>/logs/
+```
+
+The watchdog uses the same `colab exec` channel every 30 seconds, so calls can queue
+behind it. When one does not come back, `cw logs` says so — wait a moment and retry.
 
 `cw` runs the existing scripts as they are, so you can call them directly.
 
@@ -323,25 +338,36 @@ cw image "..." --out ./assets/hero.png     # output here, ledger in comfy-wrappe
 Generated files land where you ran it; the job ledger and the keys stay on the
 comfy-wrapper side.
 
-For code, one shared network keeps the endpoint resolving as `http://tunnel:8000`, so the
-caller changes neither its code nor its configuration, and no port is exposed on the
-host. The caller just repeats the **same declaration** this repository uses.
+For code, the route is HTTP. The `tunnel` service publishes 8000 on the host, so **the
+caller only ever looks at port 8000 — never at this repository's service or network
+names.**
+
+```bash
+# the caller's .env, for a process on the host
+COLAB_ENDPOINT=http://127.0.0.1:8000
+COLAB_API_KEY=...
+```
+
+A caller inside a container reaches the same port through the host:
 
 ```yaml
 # the caller's docker-compose.yml
 services:
   app:
-    networks: [default, comfy]
-networks:
-  comfy:
-    name: comfy-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # needed outside Docker Desktop
+    environment:
+      COLAB_ENDPOINT: http://host.docker.internal:8000
 ```
 
-**Do not mark it `external: true`.** An external network that does not exist yet makes
-Compose fail to start at all — the caller could no longer run anything, generation-related
-or not, and neither could this repository on its own. With a fixed name and no `external`,
-whichever side comes up first creates it and the other joins. No `docker network create`
-step is needed.
+A shared `comfy-net` network used to resolve `http://tunnel:8000` for callers, but that
+tied them to this repository's service and network names, and no project rides it any
+more — the declaration is gone. Going through the host keeps the caller stable when this
+side changes.
+
+8000 is published on `0.0.0.0`. **It requires a Bearer key** (32 random bytes, stored as
+a SHA-256 hash); only `/health` answers without one. **8188 (ComfyUI) is never
+published.**
 
 Issue **one key per project** — sharing `.colab/colab-api-key` means you cannot revoke
 one caller without breaking the others.
@@ -630,7 +656,10 @@ cryptomining botnet campaigns. This project therefore keeps ComfyUI bound to `12
 and exposes only the FastAPI service, behind an SSH tunnel and a bearer key. Do not
 publish port 8188.
 
-Compose publishes a single port, `127.0.0.1:8000`.
+Compose publishes a single port, 8000, on `0.0.0.0` — that is the way in for callers
+in other containers (`host.docker.internal:8000`). It requires a bearer key; only
+`/health` answers without one. **Never omit the host IP in a `ports:` entry** — an
+omitted IP means `0.0.0.0`, so write it out even when that is the intent.
 
 Access keys are generated locally and stored in `.colab/comfy-keys.json`; only SHA-256
 hashes are sent to the runtime, so no plaintext key ever exists remotely.

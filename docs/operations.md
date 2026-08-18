@@ -28,6 +28,7 @@ L4 を既定にしているのは、A100 の 3.44分の1 の単価に対して�
 cw status                                            # まず現状を見る
 cw up --setup video --models ltx-2.5 --gpu L4 --max 60
 cw video ./still.png --model ltx-2.5 --out ./clip.mp4
+cw logs setup --tail 50                              # 気になることがあれば止める前に
 cw stop
 ```
 
@@ -134,21 +135,16 @@ cd /path/to/your-project
 cw image "..." --out ./assets/hero.png
 ```
 
-コードから頼む場合は、共有ネットワークに乗せて `http://tunnel:8000` を解決させる。呼ぶ側は
-同じ宣言を繰り返すだけでよく、ホストにポートを開けなくて済む。
+コードから頼む場合は HTTP。`tunnel` サービスが 8000 をホストへ publish しているので、呼ぶ側は
+こちらのサービス名もネットワーク名も知らずに、8000 番だけを見る。
 
-```yaml
-services:
-  app:
-    networks: [default, comfy]
-networks:
-  comfy:
-    name: comfy-net
-```
+- ホストで動くプロセス: `COLAB_ENDPOINT=http://127.0.0.1:8000`
+- コンテナの中: `COLAB_ENDPOINT=http://host.docker.internal:8000` と
+  `extra_hosts: ["host.docker.internal:host-gateway"]`
 
-`external: true` は付けない。まだ存在しない外部ネットワークを指定すると Compose が起動そのものに
-失敗し、呼ぶ側は生成と関係ない作業もできなくなる。名前を固定して `external` を付けなければ、
-先に上がった方が作って後から片方が参加する。
+共有ネットワーク `comfy-net` に相乗りして `http://tunnel:8000` を解決させる経路は外した
+(issue #17)。乗る相手がいなくなったうえ、こちらのサービス名とネットワーク名に呼ぶ側が
+依存する形でもあった。
 
 キーはプロジェクトごとに発行して、呼ぶ側の `.env` に置く。
 

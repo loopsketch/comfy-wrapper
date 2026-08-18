@@ -7,6 +7,7 @@ compose のサービス名・コンテナ内のパスが漏れていないこと
 
 from __future__ import annotations
 
+import ast
 import io
 import sys
 import unittest
@@ -40,20 +41,23 @@ class RepoTest(unittest.TestCase):
         self.assertTrue((repo / "src" / "scripts" / "generate_image.py").exists())
         self.assertTrue((repo / "docker-compose.yml").exists())
 
-    def test_only_8000_is_published_and_only_to_loopback(self):
+    def test_only_8000_is_published_and_the_bind_is_written_out(self):
         """ホストへ出すポートを固定する。
 
         **ComfyUI(8188)はホストへ出さない。** 認証が無く、ワークフローを投げられること
         自体が任意コード実行と等価になる。手元から 8188 を使う経路も無い。
 
-        **Docker はホスト IP を省くと 0.0.0.0 に開く。** `"8000:8000"` と書いていた時期が
-        あり、方針は README に書いてあるのに設定が LAN へ出ていた。
+        8000 は意図して 0.0.0.0 に出す。共有ネットワークを畳んだので、コンテナから頼む側
+        (host.docker.internal 経由) はここしか通り道が無い。Bearer キーが要る口。
+
+        **ホスト IP を省かない。** 省くと 0.0.0.0 になるので、広い側を選ぶときも
+        書いてあること (issue #19 は、書いていなかったせいで 8188 が LAN へ出ていた)。
         """
         with mock.patch.dict("os.environ", {}, clear=True):
             repo = cw.repo_home()
         text = (repo / "docker-compose.yml").read_text()
         published = re.findall(r'^\s*-\s*"([^"]*:\d+)"\s*$', text, re.M)
-        self.assertEqual(published, ["127.0.0.1:8000:8000"])
+        self.assertEqual(published, ["0.0.0.0:8000:8000"])
 
     def test_env_override(self):
         with TemporaryDirectory() as tmp:
@@ -154,6 +158,124 @@ class JobsTest(unittest.TestCase):
         self.assertEqual([c[0] for c in script.calls], ["generate_image", "postprocess"])
 
 
+class FakeRuntime:
+    """`colab exec` の代わり。送られたコードを控え、決めた中身を返す。
+
+    **前後に colab-cli の行を混ぜて返す。** 本文を区切りの間だけから拾えているかを
+    見るため (混ざると保存したログの先頭に接続メッセージが入る)。
+    """
+
+    def __init__(self, files: dict[str, str] | None = None, reason: str = ""):
+        self.files = {} if files is None else files
+        self.reason = reason
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, code, session, timeout=None):
+        self.calls.append((code, session))
+        if self.reason:
+            return None, self.reason
+        token = re.search(r"CWLOG[0-9a-f]+", code).group(0)
+        out = ["colab: connecting to the runtime..."]
+        if "'FILE'" in code:
+            for name, text in self.files.items():
+                out.append(f"{token} FILE {name}.log {len(text.encode())} 08/18 19:00:00")
+        else:
+            head = re.search(r"names, tail, limit, token = (\[.*?\]), (\d+),", code)
+            for name in ast.literal_eval(head.group(1)):
+                text = self.files.get(name)
+                if text is None:
+                    out.append(f"{token} MISSING {name}")
+                    continue
+                tail = int(head.group(2))
+                lines = text.splitlines()
+                out.append(f"{token} BEGIN {name} {len(text.encode())}")
+                out.extend(lines[-tail:] if tail else lines)
+                out.append(f"{token} END {name}")
+        out.append("colab: done")
+        return "\n".join(out) + "\n", ""
+
+
+class LogsTest(unittest.TestCase):
+    """止める前にログを読む口 (issue #20)。
+
+    **ランタイムを止めると /content ごと消える。** 読む手段が無いと、その回に分かった
+    ことがそのまま失われる。cw の中で完結していること、保存先が監視の回収と同じ場所で
+    あることを見る。
+    """
+
+    LOGS = {"setup": "\n".join(f"setup {i}" for i in range(1, 6)),
+            "api": "uvicorn running", "comfyui": "got prompt"}
+
+    def setUp(self):
+        self.runtime = FakeRuntime(dict(self.LOGS))
+        patcher = mock.patch.object(cw, "_colab_code", self.runtime)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.rescue = Path(tmp.name)
+        patcher = mock.patch.object(cw, "RESCUE_ROOT", self.rescue)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, *argv) -> tuple[int, str]:
+        with mock.patch("sys.stdout", io.StringIO()) as out:
+            rc = cw.main(list(argv))
+        return rc, out.getvalue()
+
+    def test_the_tail_comes_back_without_the_cli_chatter(self):
+        rc, printed = self._run("logs", "setup", "--tail", "2")
+        self.assertEqual(rc, 0)
+        self.assertIn("setup 5", printed)
+        self.assertNotIn("setup 1", printed)
+        # 区切りの外は本文ではない
+        self.assertNotIn("colab: connecting", printed)
+        self.assertIn("/content/logs/setup.log", printed)
+
+    def test_the_session_and_the_remote_path_stay_inside_cw(self):
+        """呼ぶ側に colab exec もコンテナ内のパスも書かせない。"""
+        self._run("logs", "api", "-s", "other")
+        code, session = self.runtime.calls[0]
+        self.assertEqual(session, "other")
+        self.assertIn("/content/logs", code)
+
+    def test_without_a_name_it_lists_what_is_there(self):
+        rc, printed = self._run("logs")
+        self.assertEqual(rc, 0)
+        for name in self.LOGS:
+            self.assertIn(f"{name}.log", printed)
+
+    def test_save_takes_the_whole_file_to_the_rescue_directory(self):
+        """--save は末尾ではなく全文。**回収は監視の自動停止と同じ置き場へ。**"""
+        rc, printed = self._run("logs", "--save", "-s", "comfy")
+        self.assertEqual(rc, 0)
+        saved = self.rescue / "comfy" / "logs" / "setup.log"
+        self.assertIn("setup 1", saved.read_text())
+        self.assertIn("setup 5", saved.read_text())
+        self.assertIn("logs/setup.log", printed.replace("\\", "/"))
+        # 全文を頼んでいること (tail=0)
+        code = self.runtime.calls[0][0]
+        self.assertRegex(code, r"names, tail, limit, token = \[.*?\], 0,")
+
+    def test_a_missing_log_is_named_and_fails(self):
+        self.runtime.files.pop("api")
+        rc, printed = self._run("logs", "api")
+        self.assertEqual(rc, 1)
+        self.assertIn("api.log", printed)
+
+    def test_an_unknown_name_is_rejected(self):
+        with mock.patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit):
+                cw.main(["logs", "keepalive"])
+
+    def test_a_runtime_that_does_not_answer_says_why(self):
+        """**監視と取り合いになる。** 返らなかった回に理由を捨てない。"""
+        self.runtime.reason = "colab exec が 120秒 で返りませんでした (監視が同じ口を使っています)"
+        rc, printed = self._run("logs", "setup")
+        self.assertEqual(rc, 1)
+        self.assertIn("監視", printed)
+
+
 class OpsTest(unittest.TestCase):
     """運用系。**docker compose を呼ぶ側に見せない**ことを確かめる。"""
 
@@ -166,6 +288,17 @@ class OpsTest(unittest.TestCase):
             self.addCleanup(patcher.stop)
         # 疎通の待ちはテストでは要らない
         patcher = mock.patch.object(cw, "REACH_WAIT", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # 止める前のログ回収も cw の中を通る。ここで実物の colab exec を叩かせない
+        self.runtime = FakeRuntime({"setup": "setup done"})
+        patcher = mock.patch.object(cw, "_colab_code", self.runtime)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.rescue = Path(tmp.name)
+        patcher = mock.patch.object(cw, "RESCUE_ROOT", self.rescue)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -247,6 +380,26 @@ class OpsTest(unittest.TestCase):
              ("colab.sh", "sessions")],
         )
         self.assertEqual(self.docker.calls, [("compose", "stop", "tunnel")])
+
+    def test_stop_rescues_the_logs_before_it_folds_the_runtime(self):
+        """**止めると /content ごと消える。** 畳む前に持ち帰ること (issue #20)。"""
+        with mock.patch("builtins.print"):
+            cw.main(["stop"])
+        self.assertEqual((self.rescue / "comfy" / "logs" / "setup.log").read_text().strip(),
+                         "setup done")
+        self.assertEqual(len(self.runtime.calls), 1)
+
+    def test_stop_can_skip_the_rescue(self):
+        with mock.patch("builtins.print"):
+            cw.main(["stop", "--no-logs"])
+        self.assertEqual(self.runtime.calls, [])
+
+    def test_a_failed_rescue_does_not_stop_the_stopping(self):
+        """回収に失敗しても止めるほうは続ける。止め損ねると課金だけが続く。"""
+        self.runtime.reason = "認証が切れています"
+        with mock.patch("builtins.print"):
+            cw.main(["stop"])
+        self.assertIn(("colab.sh", "stop", "-s", "comfy"), self.sh.calls)
 
     def test_stop_releases_orphans_only_when_asked(self):
         """名前の無い割り当ては stop -s では引けない。**明示したときだけ解放する。**"""
