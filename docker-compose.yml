@@ -43,7 +43,7 @@ services:
     user: "1000:1000"
     environment:
       HOME: /app/.colab
-      # 見張りのログを手元と同じ時刻で書く(既定の UTC だと読み違える)
+      # 監視のログを手元と同じ時刻で書く(既定の UTC だと読み違える)
       TZ: ${TZ:-Asia/Tokyo}
       COLAB_AUTH_LOOP_MINUTES: ${COLAB_AUTH_LOOP_MINUTES:-30}
     entrypoint: ["/app/src/scripts/colab_entrypoint.sh"]
@@ -85,7 +85,7 @@ services:
 # 先に上がった方が作り、あとから来た方がそれに乗る(呼ぶ側も同じ宣言を置く)。
 #
 # **自前生成サーバはこのリポジトリのものだけを動かす。** .colab/ の OAuth トークン・SSH 鍵・
-# セッション台帳は1つしか持てず、複製すると Already-active SSH session (HTTP 429) や
+# セッションの記録は1つしか持てず、複製すると Already-active SSH session (HTTP 429) や
 # アイドル刈り取りの取り合いになる。呼ぶ側は colab / tunnel を自前で持たないこと。
 networks:
   comfy:
