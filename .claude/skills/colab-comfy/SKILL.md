@@ -11,21 +11,27 @@ Colab のランタイムを確保して ComfyUI を立て、手元から HTTP AP
 ## 鉄則
 
 - **GPU は稼働時間で課金される。** 確保したら必ず止める。止め忘れは寝ている間も課金が続く。
-- **確保の前にユーザーへ確認する。** `colab new` / `colab_run.sh` は課金の始まりなので、
+- **確保の前にユーザーへ確認する。** `cw up` / `cw run` は課金の始まりなので、
   GPU の種類と上限時間を伝えてから実行する。生成そのものの繰り返しは確認不要。
 - **人待ちを作らない。** 確保してから「次どうしますか」と聞いている間も課金される。
   何をどこまでやるかは確保の前に決めておく。
-- **見張り(`colab_watch.sh`)を必ず動かす。** `colab_run.sh` は自動で始める。
-  手で `colab.sh new` したときは自分で始めること。
+- **見張りを必ず動かす。** `cw up` / `cw run` は自動で始める。手で `colab.sh new` した
+  ときは `cw watch <セッション> <上限分>` で自分で始めること。
 - **投入を安易にリトライしない。** 202 が返っていれば生成は走っている。投げ直すと
   GPU 時間をそのまま捨てる。
 - **構築したモデルと、生成で指定するモデルを必ず一致させる。** `--models` で入れたのは
-  1モデルだけで、`generate_image.py` の既定は `z-image`。ずれると ComfyUI が
+  1モデルだけで、`cw image` の既定は `z-image`。ずれると ComfyUI が
   `value_not_in_list` (400) で弾く(2026-08-12 に踏んだ)。**`--model` は毎回明示する。**
 
 ## 0. いまの状態を見る
 
 生成を頼まれたら、まずここから。すでにセッションがあれば確保は要らない。
+
+```bash
+cw status     # compose / セッション / 見張り / 疎通 を1画面で
+```
+
+`cw` が無ければ同じものを個別に見る。
 
 ```bash
 docker compose ps                      # colab / tunnel が動いているか
@@ -43,22 +49,26 @@ docker compose exec -T colab python /app/src/scripts/colab_auth.py
 
 ## 1. セッションが無いとき: 確保して構築する
 
-`colab_run.sh` が 確保 → 構築 → 起動 → 実行 → 停止 を1本で流す。**何が起きても最後に
-止める**ので、これを既定の入口にする。
+続けて何枚も生成するなら `cw up` で確保して構築する(**セッションは残るので、
+止める責任がこちらに残る**。手順は 3)。
 
 ```bash
 # 画像(Qwen-Image-Edit / Z-Image / Qwen-Image)
-# --models と --model は同じものにする。ずれると 400 で弾かれる
-src/scripts/colab_run.sh --setup image --models qwen-image-edit --gpu L4 --max 60 --keep -- \
-  src/scripts/generate_image.py submit "プロンプト" --model qwen-image-edit --aspect 9x16
+# --models と、あとで使う --model は同じものにする。ずれると 400 で弾かれる
+cw up --setup image --models qwen-image-edit --gpu L4 --max 60
 
-# 動画(Wan2.2 / LTX-2.3)
-src/scripts/colab_run.sh --setup video --models ltx-2.3-gguf --gpu L4 --max 90 -- \
-  src/scripts/measure_video.py submit works/still.png --model ltx-2.3-gguf --aspect 9x16
+# 動画(Wan2.2 / LTX)
+cw up --setup video --models ltx-2.5 --gpu L4 --max 90
 ```
 
-- `--keep` を付けると終わってもセッションを残す。**続けて何枚も生成するなら付ける。**
-  付けたら自分で止める責任が残る(手順は 3)。
+1本だけ流して確実に止めたいときは `cw run`。確保 → 構築 → 実行 → 停止 を1本で流し、
+**何が起きても最後に止める**。`--` のあとは client コンテナのパスで書く。
+
+```bash
+cw run --setup video --models ltx-2.5 --gpu L4 --max 90 -- \
+  src/scripts/measure_video.py submit works/still.png --model ltx-2.5 --aspect 9x16
+```
+
 - `--max` は見張りの上限分。ここを超えると見張りが強制的に止める。構築に 15〜25分
   かかるので、生成の時間を足して決める。
 - 構築は **15〜25分かかる**。Bash ツールの上限を超えるので `run_in_background: true` で
@@ -77,28 +87,34 @@ src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup_status.py
 
 `--keep` で残したあと、あるいは既にセッションが立っているとき。
 
+`cw` が入っていれば (`uv tool install --editable .`)、パスは CWD 相対でよい。
+入っていない環境では `docker compose run --rm client src/scripts/<同じスクリプト>` で
+同じことができる(この節のコマンドはどちらでも通る)。
+
 ```bash
-# 画像。既定は完成まで待って works/images/ に書き出す
+# 画像。既定は完成まで待って CWD に書き出す
 # --model はそのセッションで構築したモデル。省略すると既定の z-image になる
-docker compose run --rm client src/scripts/generate_image.py \
-  submit "プロンプト" --model qwen-image --aspect 9x16 --out works/foo.png
+cw image "プロンプト" --model qwen-image --aspect 9x16 --out works/foo.png
 
 # 参照画像つき(渡すと model によらず Qwen-Image-Edit の編集経路になる。最大3枚)
-docker compose run --rm client src/scripts/generate_image.py \
-  submit "image 1 の人物が公園のベンチに座っている" --ref works/ref.png --aspect 1x1
+cw image "image 1 の人物が公園のベンチに座っている" --ref works/ref.png --aspect 1x1
 
 # まとめて投げて、あとで回収する
-docker compose run --rm client src/scripts/generate_image.py submit "..." --no-wait
-docker compose run --rm client src/scripts/generate_image.py status
+cw image "..." --no-wait
+cw jobs
 ```
 
 ```bash
-# 動画の疎通確認(1本だけ生成して mp4 を書く)
-docker compose run --rm client src/scripts/smoke_test.py --aspect 9x16 --out works/smoke.mp4
+# 動画(画像を渡すと i2v、渡さなければ t2v)
+cw video works/still.png --model ltx-2.5 --out works/clip.mp4
+cw video --prompt "..." --aspect 9x16 --out works/clip.mp4
 
 # 仕上げ(フレーム補間 + アップスケール)
-docker compose run --rm client src/scripts/postprocess.py submit works/clip.mp4 --size 4k --multiplier 2
-docker compose run --rm client src/scripts/postprocess.py status
+cw post works/clip.mp4 --size 4k --multiplier 2
+cw jobs
+
+# どのモデルで何ができるか・1秒あたりいくらか
+cw models
 ```
 
 **ジョブ台帳はサーバのメモリにしかない。** ランタイムを止めると回収できなくなるので、
@@ -107,6 +123,12 @@ docker compose run --rm client src/scripts/postprocess.py status
 ## 3. 止める
 
 `--keep` を付けた、または手で確保したときは、**作業が終わったら必ず実行する。**
+
+```bash
+cw stop     # 見張り -> セッション -> 現物の確認 -> トンネル
+```
+
+`cw` が無ければ同じ順で手で叩く。
 
 ```bash
 src/scripts/colab_watch.sh --stop

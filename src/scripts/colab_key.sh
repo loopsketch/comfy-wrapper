@@ -7,6 +7,7 @@
 # SHA-256 ハッシュだけのキーストアなので、平文がリモートに存在しない。
 # キーは初回だけ発行し、以降は同じものを送り直す。作り直したいときは
 # .colab/comfy-keys.json と .colab/colab-api-key を消してから実行する。
+# 他のプロジェクトへ配るキーは cw key issue --name <用途> で足す (ここでは触らない)。
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -17,8 +18,14 @@ PLAIN=".colab/colab-api-key"
 
 mkdir -p .colab
 
-if [ ! -f "$STORE" ] || [ ! -f "$PLAIN" ]; then
-  rm -f "$STORE" "$PLAIN"
+# **キーストアを丸ごと作り直さない。** 他のプロジェクト向けに発行したキー
+# (cw key issue) まで巻き込むと、こちらの手元用を1本足すために全部が失効する
+if [ ! -f "$STORE" ]; then
+  # ストアが無いなら手元の平文はもうどこにも登録されていない
+  rm -f "$PLAIN"
+fi
+
+if [ ! -f "$PLAIN" ]; then
   docker compose exec -T colab \
     python src/scripts/genkey.py --keys "/app/$STORE" issue --name comfy --env \
     | sed 's/^COLAB_API_KEY=//' > "$PLAIN"

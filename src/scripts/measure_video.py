@@ -1,14 +1,11 @@
-"""Wan2.2 / LTX-2.3 / H3 の生成時間を、ロード込みと込みでないので測る。
+"""Wan2.2 / LTX-2.3 / H3 の生成時間を、ロード込みと込みでないので測る。cw measure の実体。
 
     # 1本目(ウェイトを VRAM へ積むところから)
-    docker compose run --rm client src/scripts/measure_video.py \
-      submit works/still.png --model wan2.2 --aspect 9x16
+    cw measure submit ./still.png --model wan2.2 --aspect 9x16
     # 進捗を見る(succeeded なら動画も回収する)
-    docker compose run --rm client src/scripts/measure_video.py \
-      status --model wan2.2
+    cw measure status --model wan2.2
     # 1本目が終わってから2本目を投げ、最後に表を出す
-    docker compose run --rm client src/scripts/measure_video.py \
-      report --model wan2.2
+    cw measure report --model wan2.2
 
 **1本目が終わってから2本目を投げる。** 続けて投入するとキュー待ちの時間が
 2本目の計測に混ざり、「ロードにいくらかかったか」が出せなくなる。
@@ -46,7 +43,9 @@ from lib.video_sizes import MODEL_RESOLUTIONS, output_size
 
 # 宛先とキーの解決は colab_link に集約してある(旧名の環境変数も読む)
 ENDPOINT = colab_link.read_endpoint()
-STATE_DIR = Path("/app/works/.verify")
+# 測定の台帳はリポジトリ側に集約する。回収した動画の置き場は submit のときの CWD
+# (--out-dir で変えられる) を台帳に絶対パスで残し、status がそこへ書く
+STATE_DIR = colab_link.JOBS_DIR
 
 # Wan / LTX は H3 のような形式プロンプトを取らないので、素のシネマ的な描写で書く。
 PROMPT = (
@@ -157,8 +156,11 @@ def cmd_submit(args) -> int:
         "fps": job["fps"],
     }
     state["runs"].append(run)
+    # 回収先は submit の時点で決めて絶対パスで残す。status を別の場所から叩いても
+    # 同じところへ落ちる
+    state["out_dir"] = str((args.out_dir or Path.cwd()).resolve())
     state["conditions"] = {
-        "still": str(args.still),
+        "still": str(args.still.resolve()),
         "resolution": args.resolution,
         "megapixels": megapixels,
         "duration": args.duration,
@@ -211,7 +213,9 @@ def cmd_status(args) -> int:
         print(line)
 
         if job["status"] == "succeeded" and not run.get("video"):
-            out = STATE_DIR / f"measure_{args.model}_{run['run']}.mp4"
+            out_dir = Path(state.get("out_dir") or Path.cwd())
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / f"measure_{args.model}_{run['run']}.mp4"
             out.write_bytes(_req("GET", f"/v1/jobs/{run['job_id']}/video", timeout=600))
             run["video"] = str(out)
             print(f"  回収した: {out} ({out.stat().st_size / 1024:.0f}KB)")
@@ -275,6 +279,7 @@ def main() -> int:
         "--no-lightning", action="store_true", help="Wan の 4steps 蒸留 LoRA を使わない"
     )
     p.add_argument("--force", action="store_true", help="前の run が未完でも投げる")
+    p.add_argument("--out-dir", type=Path, help="回収した動画の置き場。既定は CWD")
     p.set_defaults(func=cmd_submit)
 
     p = sub.add_parser("status", help="状態を見て、終わっていれば動画を回収する")

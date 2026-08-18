@@ -1,6 +1,7 @@
 services:
-  # 手元から API を叩く側。生成の投入と回収、測定、仕上げの投入をここで動かす。
-  #   docker compose run --rm client src/scripts/smoke_test.py
+  # 手元から API を叩く側。**通常は cw が直接ホストで動かすので出番は無い。**
+  # ホストに python を入れられない環境と、cw run の -- のあとがここを使う。
+  #   docker compose run --rm client src/scripts/generate_video.py
   # サーバ本体 (src/server/) は Colab 側で動くのでこのイメージには入らない。
   client:
     build:

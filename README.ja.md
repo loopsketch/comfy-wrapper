@@ -6,7 +6,16 @@
 キー認証つきの HTTP API として使うためのラッパです。
 
 Colab ランタイム上で [ComfyUI](https://github.com/comfyanonymous/ComfyUI) を動かし、その前段に
-小さな FastAPI を置いて、SSH トンネルで手元へ通します。ホストに入れるのは Docker だけです。
+小さな FastAPI を置いて、SSH トンネルで手元へ通します。ホストに入れるのは Docker と、
+依存ゼロの CLI `cw` だけです。
+
+```bash
+uv tool install --editable /path/to/comfy-wrapper
+
+cw up --setup image --models z-image --gpu L4 --max 60
+cw image "a pug on a sunlit windowsill" --out ./hero.png
+cw stop
+```
 
 ```
 POST /v1/generate  ->  job_id   (202 で返り、生成は裏で走る)
@@ -23,10 +32,13 @@ GET  /v1/jobs/{id}/video -> mp4
   参照として受け取れます。LTX-2.3 / LTX-2.5 も音声つきで出力し、Wan2.2-S2V は入力音声で駆動します。
 - **ComfyUI は外に出さない。** ComfyUI には認証機構が無いため、ランタイム上では `127.0.0.1` に
   閉じたままにします。外から届くのは SSH トンネル越しの FastAPI だけで、Bearer キーが要ります。
-- **平文のキーは手元から出ない。** `colab_key.sh` が手元でキーを発行し、ランタイムへ送るのは
+- **平文のキーは手元から出ない。** `cw key issue` が手元でキーを発行し、ランタイムへ送るのは
   SHA-256 のハッシュだけです。
-- **ホストには何も入れない。** コンテナは `client` / `colab` / `tunnel` の3つで、どれも
-  `python:3.12-slim` です。Python も CUDA も ComfyUI も手元には要りません。
+- **呼ぶ側は3つを知らなくてよい。** リポジトリの場所・compose のサービス名・コンテナ内の
+  パスを `cw` が隠します。生成はホストの python で直接動く (依存ゼロ・stdlib だけ) ので、
+  `--ref ./ref.png` も `--out ./hero.png` も CWD 相対のまま通ります。
+- **ホストに CUDA も ComfyUI も要らない。** コンテナは `client` / `colab` / `tunnel` の3つで、
+  どれも `python:3.12-slim` です。
 - **課金を止める見張り。** Colab は GPU の稼働時間で課金されるので、`colab_watch.sh` が
   作業中はランタイムを保ち、アイドルや上限時間に達したら成果物を回収してから停止します。
 - **仕上げの経路つき。** `POST /v1/postprocess` でフレーム補間とアップスケールを通し、
@@ -55,6 +67,7 @@ GET  /v1/jobs/{id}/video -> mp4
 | | |
 |---|---|
 | ホスト | Docker と Compose **v2** が動く Linux / macOS / WSL2 (`docker-compose` では動きません)。ポート 8000 と 8188 が空いていること |
+| `cw` | Python **3.11以上**。入れるのは `uv` か `pipx`。パッケージ側の依存はゼロで、ffmpeg も要りません (`cw post` は mp4 のヘッダを自前で読みます。mp4 以外を仕上げるときだけ ffprobe を使います) |
 | Google アカウント | **Colab のコンピューティングユニットが要ります。** 無料枠では CLI から GPU ランタイムを確保できません |
 | ブラウザ | 初回の認証1回だけ。コードの貼り付け方式なので**別のマシンのブラウザでよく**、ヘッドレスなサーバでも通ります |
 | SSH 鍵 | ed25519 か ecdsa。RSA は拒否されます |
@@ -65,6 +78,18 @@ GET  /v1/jobs/{id}/video -> mp4
 大きく絞られ(実測で 622MB/s が 8MB/s)、その待ち時間はそのまま GPU の課金になります。
 
 ## 使い方
+
+### 0. `cw` を入れる
+
+```bash
+uv tool install --editable /path/to/comfy-wrapper   # pipx install -e . でも入ります
+cw --help
+```
+
+`--editable` で入れるのは、`cw` がこのソースツリーをそのまま使うからです。**生成系
+(`image` / `video` / `post` / `jobs` / `models`) はホストの python で直接動き**、
+運用系 (`up` / `stop` / `status` など) だけが内側で `docker compose` を呼びます。
+リポジトリを別の場所へ移したときは `COMFY_WRAPPER_HOME` で指せます。
 
 ### 1. 一度だけ: 認証と鍵
 
@@ -87,64 +112,97 @@ OAuth トークンを延長するので、人が要るのは初回だけです�
 ### 2. ランタイムを確保して構築する
 
 ```bash
-src/scripts/colab.sh new -s comfy --gpu L4
-src/scripts/colab_watch.sh comfy 90              # 見張り。上限90分
-
-src/scripts/colab_push.sh comfy                  # src/ を送る
-src/scripts/colab_key.sh comfy                   # キーのハッシュを送る
-src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup.py
-src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup_status.py
+cw up --setup image --models z-image --gpu L4 --max 60
 ```
 
-ComfyUI の導入とウェイトの取得で 15〜25 分かかります。`colab exec` は同期実行で長時間の
-処理では WebSocket が切れるため、構築は `nohup` で切り離し、進捗は
-`colab_setup_status.py` で見ます。Wan / LTX 用は `colab_video_setup.py`、静止画モデル用は
-`colab_image_setup.py` に差し替えてください。
-
-### 3. トンネルを張る
+確保 → コードとキーの送付 → 構築 → トンネル まで無人で進み、**セッションは残ります**
+(`cw run` と違って止めません)。ComfyUI の導入とウェイトの取得で 15〜25 分かかります。
+`--setup` は `image`(静止画)/ `video`(Wan2.2 / LTX)/ `h3`(MiniMax H3)。
+`--max` は見張りの上限分で、超えたら見張りが強制停止します。
 
 ```bash
-src/scripts/colab.sh exec -s comfy -f src/scripts/colab_serve_status.py
-docker compose up -d tunnel
+cw status     # compose / セッション / 見張り / 疎通 を1画面で
 ```
 
-### 4. 生成する
+### 3. 生成する
+
+パスは **CWD 相対**です。どのディレクトリから叩いても構いません。
 
 ```bash
-# 動画
-docker compose run --rm client src/scripts/smoke_test.py --aspect 9x16 --out works/smoke.mp4
-docker compose run --rm client src/scripts/smoke_test.py --first-frame works/still.png
-
 # 静止画(完成まで待って png を書き出す)
-docker compose run --rm client src/scripts/generate_image.py \
-  submit "a cat on a neon-lit rooftop" --model z-image --aspect 9x16
-docker compose run --rm client src/scripts/generate_image.py \
-  submit "image 1 の人物が公園のベンチに座っている" --ref works/ref.png
+cw image "a cat on a neon-lit rooftop" --model z-image --aspect 9x16 --out ./cat.png
+cw image "image 1 の人物が公園のベンチに座っている" --ref ./ref.png
+
+# 動画。画像を渡すと i2v、渡さなければ t2v
+cw video ./cat.png --model ltx-2.5 --out ./clip.mp4
+cw video --prompt "rain on neon streets" --duration 5
+
+# 仕上げ(フレーム補間 + アップスケール)
+cw post ./clip.mp4 --size 4k --multiplier 2
+
+# まとめて投げて、あとで回収する
+cw image "..." --no-wait
+cw jobs
+
+cw models     # どのモデルで何ができるか・1秒あたりいくらか
 ```
 
-### 5. 止める
+出力は CWD に書き、**ジョブの台帳はリポジトリの `.colab/jobs/` に絶対パスで**残ります。
+呼ぶ側のプロジェクトを汚さず、別のディレクトリから `cw jobs` を叩いても同じ場所へ
+回収できます。
+
+### 4. 止める
 
 ```bash
-src/scripts/colab.sh stop -s comfy
-src/scripts/colab.sh sessions      # ローカルの記録ではなくサーバーに問い合わせる
-docker compose stop tunnel
+cw stop
 ```
 
+見張り → セッション → **サーバへの問い合わせ** → トンネル の順に畳みます。
+台帳から消えることとリモートが止まることは別なので、最後に現物を出します。
 GPU の稼働時間で課金されるので、止まっていることを必ず確かめてください。
 
 **`tunnel` を上げっぱなしにしない。** セッションが無い状態で常駐させると、
 ProxyCommand の `colab ssh -s comfy` がその名前のランタイムを確保します(実測では
 CPU ランタイムなのでコンピューティングユニットは減りませんが、意図しない確保です)。
-使い終わったら `docker compose stop tunnel` まで含めて片付けてください。
+`cw stop` はトンネルまで畳みます。
 
 ### 無人で1本流す
 
-`colab_run.sh` は確保 → 構築 → 実行 → 停止 をまとめて流し、途中で何が起きても最後に必ず
-セッションを止めます。`--` のあとは `client` コンテナの python にそのまま渡ります。
+`cw run` は確保 → 構築 → 実行 → 停止 をまとめて流し、途中で何が起きても最後に必ず
+セッションを止めます。`--` のあとは `client` コンテナの python にそのまま渡るので、
+**ここだけはコンテナの中のパス**で書きます。
 
 ```bash
-src/scripts/colab_run.sh --setup video --models ltx-2.3-gguf --gpu L4 --max 60 -- \
-  src/scripts/measure_video.py submit works/still.png --model ltx-2.3-gguf --aspect 9x16
+cw run --setup video --models ltx-2.5 --gpu L4 --max 60 -- \
+  src/scripts/measure_video.py submit works/still.png --model ltx-2.5 --aspect 9x16
+```
+
+### 内側 (トラブル時)
+
+セッションは生きているのに届かない、というときはトンネルだけを張り直します。
+**確保し直さないでください。** 生きているランタイムを捨ててもう一度 GPU を掴むことになります。
+
+```bash
+cw tunnel restart     # up / stop / logs もあります
+```
+
+`cw` が呼んでいるのは既存のスクリプトそのものです。うまく動かないときは直接叩けます。
+
+```bash
+docker compose ps
+docker compose logs --tail 50 tunnel
+src/scripts/colab.sh sessions
+src/scripts/colab.sh exec -s comfy -f src/scripts/colab_setup_status.py
+src/scripts/colab_watch.sh --status
+```
+
+ホストに python を入れられない環境では、生成もコンテナで動きます。
+`docker/Dockerfile.client` はそのために残してあります(ffmpeg 入りなので、mp4 以外を
+仕上げたいときの逃げ道にもなります)。
+
+```bash
+docker compose run --rm client src/scripts/generate_image.py submit "..." --model z-image
+docker compose run --rm client src/scripts/generate_video.py --first-frame works/still.png
 ```
 
 ## Claude Code から使う
@@ -165,10 +223,10 @@ src/scripts/colab_run.sh --setup video --models ltx-2.3-gguf --gpu L4 --max 60 -
 
 ```python
 import sys, base64, json
-sys.path.insert(0, "/app/src")
+sys.path.insert(0, "/path/to/comfy-wrapper/src")   # コンテナの中なら /app/src
 from lib import colab_link
 
-endpoint = colab_link.read_endpoint()      # 既定 http://tunnel:8000
+endpoint = colab_link.read_endpoint()      # コンテナ内なら tunnel:8000、ホストなら 127.0.0.1:8000
 key = colab_link.require_api_key()         # .colab/colab-api-key を読む
 
 still = base64.b64encode(open("works/still.png", "rb").read()).decode()
@@ -203,9 +261,21 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
 複製すると `Already-active SSH session (HTTP 429)` やアイドル刈り取りの取り合いになります。
 呼ぶ側に `colab` / `tunnel` サービスを持たせないでください。
 
-共有ネットワークを1本張ると、宛先が `http://tunnel:8000` のまま解決します。ホストに
-ポートを晒さずに済み、呼ぶ側はコードも宛先の設定も変えなくて済みます。呼ぶ側の
-compose に、このリポジトリと**同じ宣言**を置くだけです。
+経路は2つあります。**手で頼むなら `cw`、コードから頼むなら HTTP** です。
+
+```bash
+# 呼ぶ側のプロジェクトで
+uv tool install --editable /path/to/comfy-wrapper
+cd /path/to/your-project
+cw image "..." --out ./assets/hero.png     # 出力はこのプロジェクト、台帳は comfy-wrapper 側
+```
+
+`cw` は1台に1つのリポジトリを指すだけなので、複製は起きません。生成物は呼んだ場所に
+書かれ、ジョブの台帳と鍵は comfy-wrapper 側に集まります。
+
+コードから頼むときは共有ネットワークを1本張ると、宛先が `http://tunnel:8000` のまま
+解決します。ホストにポートを晒さずに済み、呼ぶ側はコードも宛先の設定も変えなくて
+済みます。呼ぶ側の compose に、このリポジトリと**同じ宣言**を置くだけです。
 
 ```yaml
 # 呼ぶ側の docker-compose.yml
@@ -226,14 +296,14 @@ compose ごと起動に失敗します。呼ぶ側は生成と関係ない処理
 片方だけ失効させられなくなります。
 
 ```bash
-docker compose exec -T colab python src/scripts/genkey.py \
-  --keys /app/.colab/comfy-keys.json issue --name <プロジェクト名> --env
-docker compose exec -T colab python src/scripts/genkey.py \
-  --keys /app/.colab/comfy-keys.json list
+cw key issue --name <プロジェクト名>   # 平文はこのときだけ出る
+cw key list
+cw key push                            # ハッシュをランタイムへ送る
+cw key revoke --id <id>
 ```
 
-出た `COLAB_API_KEY=...` を呼ぶ側の `.env` に置きます。**発行したら次に
-`colab_key.sh` を流したときにランタイムへ反映されます**(送るのはハッシュだけ)。
+出た `COLAB_API_KEY=...` を呼ぶ側の `.env` に置きます。**ランタイムへ渡るのは
+SHA-256 のハッシュだけ**なので、発行と反映 (`cw key push`) は別の操作です。
 
 呼ぶ側が知っておく必要があるのは3つだけです。
 
@@ -246,6 +316,9 @@ docker compose exec -T colab python src/scripts/genkey.py \
 (元はこのコードを内部に抱えていて、自前生成サーバとして切り出した側)。
 
 ## モデル
+
+同じ表は `cw models` でも出ます(ランタイムが無くても出ます。載っているかどうかだけが
+分かりません)。
 
 **1セッションに1モデル。** どれも 30〜45GB あり、`/content` にも VRAM にも同時には載りません。
 
@@ -351,9 +424,8 @@ LoadVideo -> GetVideoComponents -> FrameInterpolate -> ImageUpscaleWithModel
 ```
 
 ```bash
-docker compose run --rm client src/scripts/postprocess.py \
-  submit works/clip.mp4 --size 4k-portrait --multiplier 2
-docker compose run --rm client src/scripts/postprocess.py status
+cw post ./clip.mp4 --size 4k-portrait --multiplier 2
+cw jobs
 ```
 
 使うモデルは合計 226MB で、どの構築にも既定で入ります(`--no-postprocess` で外せます)。
@@ -362,10 +434,29 @@ docker compose run --rm client src/scripts/postprocess.py status
 なく拡大モデルが吐く中間サイズ(入力 x 倍率)で決まります。`postprocess.py` は入力と目標の
 比から x2 / x4 を選び、見積もりが 30GB を超えたら投入前に止めます。
 
+入力の寸法・fps・フレーム数は `lib/mp4_probe.py` が mp4 のヘッダから直接読むので、
+**仕上げのためだけに ffmpeg を入れる必要はありません。** mp4 以外 (webm / mkv) や
+断片化された mp4 のときだけ ffprobe に回し、それも無ければ何が足りないかを名指しして
+止まります(黙って既定値で代用すると、見積もりが入力と噛み合わないまま投入されます)。
+
 ## テスト
 
 ```bash
-docker compose run --rm client -m unittest discover -s tests -t tests
+python3 -m unittest discover -s tests -t tests                      # ホストで
+docker compose run --rm client -m unittest discover -s tests -t tests   # コンテナで
+```
+
+**両方で通ること**を確かめてください。`cw` はホストの python で動き、
+`docker compose run --rm client` はコンテナの中で動くので、置き場の解決 (`/app` か
+クローン先か) を取り違えると片方だけ落ちます。
+
+一部だけ流すときは `-p` でファイルを選びます(`tests/` の外から `import _bootstrap`
+する作りなので、`python3 tests/test_cli.py` の形では動きません)。
+
+```bash
+python3 -m unittest discover -s tests -t tests -p 'test_cli.py'        # cw の振り分け
+python3 -m unittest discover -s tests -t tests -p 'test_mp4_probe.py'  # mp4 のヘッダ読み
+python3 -m unittest discover -s tests -t tests -k Endpoint             # 名前で絞る
 ```
 
 GPU も Colab のランタイムもネットワークも要りません。**課金が始まってからでないと
@@ -384,26 +475,38 @@ GPU も Colab のランタイムもネットワークも要りません。**課�
   例外を上げないので、try/except のテストでは再現にならない
 - **OAuth の延長。** 無人のループから呼ばれるので、どんな失敗でも例外を投げないこと。
   再認証が要る状態と、こちらの都合で判定できない状態を混ぜないこと
+- **`cw` の振り分け。** 何をどこへ渡すか、`cw run ... -- <作業>` の `--` を落とさないこと、
+  運用系が `docker compose` を呼ぶ側に見せないこと、`cw models` がランタイム無しでも
+  表を出せること
+- **mp4 のヘッダ読み。** 音声トラックを映像と取り違えないこと、stts が複数に割れていても
+  フレーム数を数え落とさないこと、断片化された mp4 を 0フレームと答えないこと。
+  ここがずれると倍率も RAM も狂い、**それが分かるのは投入したあと**
+- **仕上げの前提。** mp4 は外部コマンド無しで読めること、読めない形式で黙って既定値に
+  逃げず名指しして止まること
 
 ## ディレクトリ構成
 
 ```
+pyproject.toml         cw / comfy-wrapper のパッケージ定義(依存ゼロ)
 docker-compose.yml     client / colab / tunnel の3サービス
 docker/                各サービスのイメージ
 .claude/skills/        Claude Code 用のスキル(colab-comfy: 運用 / h3-prompt: H3 の記法)
 src/
+  cli/                 cw の振り分け(comfy_wrapper として入る)
   server/              Colab 上で動く FastAPI + ComfyUI 橋渡し
   setup/               ウェイトの取得
   scripts/             手元と Colab 側の運用スクリプト
   lib/                 手元側の共有層(宛先・キー・リトライ・単価)
 tests/                 単体テスト(標準の unittest。GPU もネットワークも不要)
 works/                 生成物・測定結果・見張りの回収先(git 管理外)
+.colab/                トークン・SSH 鍵・キーストア・ジョブ台帳(git 管理外)
 ```
 
 主なモジュール(パスは `src/` からの相対):
 
 | パス | 役割 |
 |---|---|
+| `cli/main.py` | `cw` の振り分け。生成系は `scripts/` の `main()` をその場で呼び、運用系は `*.sh` を実行する |
 | `server/app.py` | FastAPI 本体。認証・ジョブ管理・ComfyUI への橋渡し |
 | `server/{h3,wan,ltx,ltx25,image,post}_workflows.py` | 各モデルのワークフロー生成(ComfyUI API フォーマット) |
 | `server/video_common.py` | 共通の寸法・尺の計算と出力段の拡大 |
@@ -414,19 +517,22 @@ works/                 生成物・測定結果・見張りの回収先(git 管�
 | `scripts/colab_run.sh` | 確保 → 構築 → 実行 → 停止 を無人で1本流す |
 | `scripts/colab_watch.sh` | 見張り。keep-alive・進捗記録・自動停止と成果物の回収 |
 | `scripts/generate_image.py` | 静止画の生成を投入して png を回収する |
+| `scripts/generate_video.py` | 動画の生成を投入して mp4 を回収する(引数なしなら疎通テスト) |
+| `scripts/postprocess.py` | 仕上げ(補間 + 拡大)の投入と回収 |
 | `scripts/measure_video.py` | 生成時間の測定(ロード込み/ロード済みを分けて出す) |
-| `scripts/smoke_test.py` | 公開 API への疎通テスト |
 | `lib/colab_link.py` | 宛先・キーの解決、リトライ、障害の切り分け |
+| `lib/mp4_probe.py` | mp4 のヘッダから寸法・fps・フレーム数を読む(仕上げの見積もり用。ffmpeg 不要) |
 | `lib/video_sizes.py` | `480p` / `720p` / `1080p` をモデルごとの生成キャンバスと出力寸法に落とす |
 
 ## 設定
 
-標準の経路では設定するものはありません。宛先は固定で、キーは `.colab/colab-api-key` から
-読みます。以下は別の構成にするときのための変数です。
+標準の経路では設定するものはありません。宛先はコンテナの中と外で自動的に振り分けられ、
+キーは `.colab/colab-api-key` から読みます。以下は別の構成にするときのための変数です。
 
 | 変数 | 既定 | 場所 |
 |---|---|---|
-| `COLAB_ENDPOINT` | `http://tunnel:8000` | client。Colab 以外に立てたときに上書きする |
+| `COMFY_WRAPPER_HOME` | `cw` から見たソースツリー | cw。リポジトリを移したときに指す |
+| `COLAB_ENDPOINT` | コンテナ内 `http://tunnel:8000` / ホスト `http://127.0.0.1:8000` | client・cw。Colab 以外に立てたときに上書きする |
 | `COLAB_SESSION` | `comfy` | tunnel。どのセッションへ通すか |
 | `COLAB_AUTH_LOOP_MINUTES` | `30` | colab。OAuth 延長の間隔 |
 | `TZ` | `Asia/Tokyo` | colab。見張りのログの時刻 |
@@ -462,7 +568,7 @@ SHA-256 のハッシュだけなので、平文のキーはリモートに存在
   使います。見張り(`colab_watch.sh`)は上限時間とアイドルでランタイムを止めますが、
   **停止を保証するものではありません。** 認証切れ・ネットワーク断・スクリプトの異常終了などで
   停止に失敗し、意図しない課金が発生しても、作者は一切の責任を負いません。ランタイムが
-  止まっていることは、利用者自身が `src/scripts/colab.sh sessions` で確認してください。
+  止まっていることは、利用者自身が `cw sessions`(サーバへの問い合わせ)で確認してください。
 - **モデルと生成物の利用も利用者の責任です。** 各モデルのライセンス・利用規約の確認と遵守、
   および生成物の取り扱いは利用者が行うものとし、それらに起因して問題が発生しても、
   作者は一切の責任を負いません。

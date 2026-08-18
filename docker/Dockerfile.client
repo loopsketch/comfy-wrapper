@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
-# ffmpeg は postprocess.py が入力クリップの寸法と fps を ffprobe で読むのに使う
+# ffmpeg は postprocess.py の逃げ道。mp4 は lib/mp4_probe.py が外部コマンド無しで
+# 読むので、ここが要るのは webm / mkv など mp4 以外を仕上げるときだけ
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*

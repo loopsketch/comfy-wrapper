@@ -13,3 +13,8 @@ works/*
 
 __pycache__/
 *.pyc
+
+# editable install が置くビルドの跡
+*.egg-info/
+build/
+dist/
