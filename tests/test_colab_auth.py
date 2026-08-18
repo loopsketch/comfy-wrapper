@@ -38,6 +38,35 @@ def _load(name):
 auth = _load("colab_auth")
 
 
+class FakeFlow:
+    """google_auth_oauthlib の InstalledAppFlow のうち、ここで使う面だけ。"""
+
+    def __init__(self):
+        self.code_verifier = None
+        self.state = None
+        self.fetched = None
+        self.error = None
+
+    def authorization_url(self, **kwargs):
+        # 本物と同じく、URL を作る時点で PKCE の verifier が生える
+        self.code_verifier = "verifier-1"
+        return "https://accounts.example.invalid/o/oauth2/auth", "st-1"
+
+    def fetch_token(self, code):
+        if self.error:
+            raise self.error
+        self.fetched = code
+
+    @property
+    def credentials(self):
+        return _FakeCredentials()
+
+
+class _FakeCredentials:
+    def to_json(self):
+        return json.dumps({"token": "at", "refresh_token": "rt"})
+
+
 def _has_google_auth() -> bool:
     # find_spec は親パッケージが無いと ModuleNotFoundError を上げる。ここは
     # 「入っていない」が正常系なので、例外にせず False に潰す
@@ -97,12 +126,80 @@ class CheckTest(unittest.TestCase):
         self.assertEqual([p.name for p in self.tmp.iterdir()], ["out.json"])
 
 
+class LoginTest(unittest.TestCase):
+    """認可 URL とコードを別プロセスに割ったときに、間で落とせないもの。
+
+    google-auth-oauthlib はこのコンテナに無いので flow ごと差し替える。**ここで
+    見たいのは Google とのやりとりではなく、URL 側でしか作れない code_verifier を
+    コード側へ渡せているか**。落とすと fetch_token が必ず失敗する。
+    """
+
+    def setUp(self):
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.flow_file = self.tmp / ".auth-flow.json"
+        self.token = self.tmp / "token.json"
+        self.enterContext(patch.object(auth, "FLOW_FILE", self.flow_file))
+        self.enterContext(patch.object(auth, "TOKEN", self.token))
+        self.enterContext(patch.object(auth, "STATE", self.tmp / "auth-state.json"))
+
+        self.built: list[dict] = []
+        self.flow = FakeFlow()
+
+        def build(state=None, code_verifier=None):
+            self.built.append({"state": state, "code_verifier": code_verifier})
+            self.flow.state = state
+            self.flow.code_verifier = code_verifier or self.flow.code_verifier
+            return self.flow
+
+        self.enterContext(patch.object(auth, "_build_flow", build))
+
+    def test_url_is_returned_and_the_flow_is_parked(self):
+        self.assertEqual(auth.login_url(), "https://accounts.example.invalid/o/oauth2/auth")
+        parked = json.loads(self.flow_file.read_text(encoding="utf-8"))
+        self.assertEqual(parked, {"state": "st-1", "code_verifier": "verifier-1"})
+
+    def test_code_writes_the_token_and_clears_the_flow(self):
+        auth.login_url()
+        with patch.object(auth, "check_and_record", lambda force=False: {"state": "ok"}):
+            self.assertEqual(auth.login_code("4/0AX-code")["state"], "ok")
+        self.assertEqual(self.flow.fetched, "4/0AX-code")
+        self.assertEqual(json.loads(self.token.read_text(encoding="utf-8"))["token"], "at")
+        # 認可コードと対になるものを残さない
+        self.assertFalse(self.flow_file.exists())
+
+    def test_code_carries_the_verifier_from_the_url_step(self):
+        """PKCE は URL を出した側にしか無い。渡し損ねると必ず fetch_token で落ちる。"""
+        auth.login_url()
+        with patch.object(auth, "check_and_record", lambda force=False: {"state": "ok"}):
+            auth.login_code("4/0AX-code")
+        self.assertEqual(
+            self.built[-1], {"state": "st-1", "code_verifier": "verifier-1"}
+        )
+
+    def test_code_without_a_parked_flow_names_the_fix(self):
+        with self.assertRaises(RuntimeError) as cm:
+            auth.login_code("4/0AX-code")
+        self.assertIn("cw auth login", str(cm.exception))
+
+    def test_a_failed_exchange_keeps_the_old_token(self):
+        """通らなかったコードで、いま生きているトークンを潰さない。"""
+        self.token.parent.mkdir(parents=True, exist_ok=True)
+        self.token.write_text('{"token": "生きている"}', encoding="utf-8")
+        auth.login_url()
+        self.flow.error = RuntimeError("invalid_grant")
+        with self.assertRaises(RuntimeError):
+            auth.login_code("4/0AX-code")
+        self.assertEqual(
+            json.loads(self.token.read_text(encoding="utf-8")), {"token": "生きている"}
+        )
+
+
 class DescribeTest(unittest.TestCase):
     def test_describe_tells_the_next_move(self):
         cases = [
             ({"state": "ok", "refreshed": True, "remaining_min": 60.0}, "更新した"),
             ({"state": "ok", "refreshed": False, "remaining_min": 12.0}, "まだ有効"),
-            ({"state": "reauth_needed", "error": "壊れた"}, "colab sessions"),
+            ({"state": "reauth_needed", "error": "壊れた"}, "cw auth login"),
             ({"state": "unknown", "error": "読めない"}, "確認できない"),
         ]
         for state, expected in cases:

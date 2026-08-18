@@ -137,14 +137,14 @@ if ! docker compose exec -T colab python /app/src/scripts/colab_auth.py; then
   cat >&2 <<'EOS'
 
 認証が切れています。次を実行してから、もう一度このコマンドを打ってください。
+**対話端末に入る必要はありません。**
 
-  docker compose exec colab colab sessions
+  cw auth login                  認可 URL が出る
+  cw auth login --code <code>    ブラウザに出たコードを渡す
 
-URL をブラウザで開き、表示されたコードを貼り付けます。**再認証のあとは
-ランタイムが残っていないかを必ず確認してください。** 切れている間は問い合わせが
-できないので、止めたつもりのものが動いたままになっていることがあります。
-
-  src/scripts/colab.sh sessions
+cw auth login --code は通ったあとにセッションを問い合わせます。**切れている間は
+問い合わせができない**ので、止めたつもりのものが動いたままになっていることが
+あります。そこで残っていたら畳んでください。
 EOS
   exit 3
 fi

@@ -8,7 +8,8 @@
 - **生成系** (`image` / `video` / `post` / `measure` / `jobs` / `models`) は
   `src/scripts/` の `main()` をこのプロセスで呼ぶ。サブプロセスを挟まないので、
   エラーもトレースバックもそのまま出る。パスは CWD 相対のまま通る。
-- **運用系** (`up` / `run` / `stop` / `status` / `sessions` / `watch` / `tunnel` / `key`) は
+- **運用系** (`up` / `run` / `stop` / `status` / `sessions` / `watch` / `auth` /
+  `tunnel` / `key`) は
   `cwd=<リポジトリ>` で既存の `src/scripts/*.sh` を実行する。**`docker compose` の
   露出はここで止める。**
 
@@ -71,6 +72,7 @@ cw — Colab の GPU 上の ComfyUI に生成を頼む
   cw status                                compose / セッション / 見張り / 疎通
   cw sessions                              サーバに現物を問い合わせる
   cw watch [セッション] [上限分]           見張りの開始・状態・停止
+  cw auth [login [--code <code>]]          Colab の認証を見る・入れ直す
   cw tunnel up|restart|stop|logs           トンネルだけを扱う (セッションは触らない)
   cw stop                                  ランタイムとトンネルを畳む
   cw key issue|list|revoke|push            アクセスキー
@@ -280,14 +282,27 @@ def _sh(script: str, *args: str) -> int:
     return subprocess.run([*cmd, *args], cwd=REPO).returncode
 
 
-def _docker(*args: str) -> int:
+def _docker(*args: str, quiet: bool = False) -> int:
     sys.stdout.flush()
+    hush = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if quiet else {}
     try:
-        return subprocess.run(["docker", *args], cwd=REPO).returncode
+        return subprocess.run(["docker", *args], cwd=REPO, **hush).returncode
     except FileNotFoundError:
         print("docker がありません。運用系のコマンドには Docker と Compose v2 が要ります",
               file=sys.stderr)
         return 127
+
+
+def _colab_exec(*args: str) -> int:
+    """colab コンテナで python を動かす。**ここは compose 経由のまま。**
+
+    google-auth と colab_cli はこのコンテナにしか入っていない。ホスト側に入れると
+    トークンの置き場が2つになるので、認証まわりは常にコンテナの中で完結させる。
+    """
+    rc = _docker("compose", "up", "-d", "colab", quiet=True)
+    if rc != 0:
+        return rc
+    return _docker("compose", "exec", "-T", "colab", "python", *args)
 
 
 def cmd_up(argv: list[str]) -> int:
@@ -395,6 +410,53 @@ def cmd_status(argv: list[str]) -> int:
     return 0
 
 
+AUTH_USAGE = """\
+cw auth                        いまの認証を見る (期限が近ければ延長する)
+cw auth login                  認可 URL を出す
+cw auth login --code <code>    ブラウザに出たコードで認証を通す
+
+**対話端末に入らなくても通せます。** URL を開いて、出てきたコードを --code に渡す
+だけです。認証が切れている間はランタイムの確認も停止もできないので、通ったあとは
+cw sessions で**止めたつもりのものが動いていないか**を必ず見てください。
+"""
+
+
+def cmd_auth(argv: list[str]) -> int:
+    """認証を見る・入れ直す。中身は colab コンテナの colab_auth.py。
+
+    **`colab` コマンドを叩かせない。** colab-cli の再認証は `input()` で標準入力を
+    待つので、そこへ落ちると人が端末に入るまで止まる。URL を出す側とコードを渡す側を
+    分けてあるのはそのため。
+    """
+    if argv and argv[0] in ("-h", "--help", "help"):
+        print(AUTH_USAGE, end="")
+        return 0
+
+    script = "/app/src/scripts/colab_auth.py"
+    if not argv or argv[0] != "login":
+        return _colab_exec(script, *argv)
+
+    parser = argparse.ArgumentParser(prog="cw auth login", add_help=False)
+    parser.add_argument("--url", action="store_true")
+    parser.add_argument("--code")
+    args = parser.parse_args(argv[1:])
+
+    if not args.code:
+        print("次の URL をブラウザで開き、承認後に出るコードを控えてください。\n")
+        rc = _colab_exec(script, "login", "--url")
+        if rc == 0:
+            print("\nコードが出たら:  cw auth login --code <code>")
+        return rc
+
+    rc = _colab_exec(script, "login", "--code", args.code)
+    if rc == 0:
+        # **切れている間は問い合わせができない。** 止めたつもりのランタイムが
+        # 動いたまま課金され続けていることがあるので、通った直後に現物を見る
+        _section("ランタイムが残っていないか確認します")
+        _sh("colab.sh", "sessions")
+    return rc
+
+
 def cmd_key(argv: list[str]) -> int:
     """アクセスキーの発行・一覧・失効と、ランタイムへの反映。
 
@@ -447,6 +509,7 @@ COMMANDS = {
     "status": cmd_status,
     "sessions": cmd_sessions,
     "watch": cmd_watch,
+    "auth": cmd_auth,
     "tunnel": cmd_tunnel,
     "stop": cmd_stop,
     "key": cmd_key,

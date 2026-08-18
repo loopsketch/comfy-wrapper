@@ -165,8 +165,9 @@ def diagnose() -> str:
     auth = _read_json(AUTH_STATE)
     if auth and auth.get("state") == "reauth_needed":
         return (
-            "Colab の認証が切れています。docker compose exec colab colab sessions で"
-            "入れ直してください。**切れている間はランタイムの確認も停止もできない**ので、"
+            "Colab の認証が切れています。cw auth login で URL を出し、ブラウザに出た"
+            "コードを cw auth login --code <code> に渡してください。"
+            "**切れている間はランタイムの確認も停止もできない**ので、"
             "入れ直したあと cw sessions で現物を見ること"
         )
     sessions = _read_json(SESSIONS)

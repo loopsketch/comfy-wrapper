@@ -40,11 +40,13 @@ src/scripts/colab_watch.sh --status    # 見張りと keep-alive の生存
 ```
 
 `colab` コンテナが動いていなければ `docker compose up -d colab`。
-認証が切れていたら **ユーザーにブラウザ操作を頼む**(Claude 側では通せない)。
+認証が切れていたら **URL を出してユーザーに開いてもらう**。対話端末は要らないので、
+返ってきたコードをこちらで渡せる。
 
 ```bash
-docker compose exec -T colab python /app/src/scripts/colab_auth.py
-# 切れていたら: docker compose exec colab colab sessions を人が実行する
+cw auth                              # 状態を見る (期限が近ければ延長する)
+cw auth login                        # 切れていたら: 認可 URL を出してユーザーに渡す
+cw auth login --code <返ってきたコード>  # 通す。そのままセッションの残りも確認する
 ```
 
 ## 1. セッションが無いとき: 確保して構築する
