@@ -16,13 +16,25 @@ huggingface_hub 1.x の既定の転送経路 **Xet は速いが、無応答の�
 GPU の時間課金では成立しない。
 
 そこで **Xet のまま取り、外から無進捗を監視して殺す**。書きかけの増え方を見て、
-一定時間伸びなければ子プロセスを落として取り直す。書きかけは残るので続きから再開する。
-最後の1回だけは Xet を切って挑む(遅いが確実)。
+一定時間伸びなければ子プロセスを落として取り直す。最後の1回だけは Xet を切って挑む
+(遅いが確実)。
 
-**ただし「続きから再開する」は確かめきれていない。** 19GB の1ファイルを取る間に書きかけが
-57GB まで積み上がった回がある。再開が効いていれば1本が伸びるだけなので、試行の頭で書きかけの
-内訳(本数と1本の大きさ)を記録して読めるようにした(describe_partials)。あわせて、空きが
-MIN_FREE_GB を切ったら理由を書いて打ち切る。**取れないまま GPU の時間を使い続けない。**
+**書きかけからの再開は効かない。** 2026-08-18 に計測した。試行のたびに別名の
+`.incomplete` が作られ、前の書きかけは一度も使われない。
+
+    1/5  ...f3963829.959623b1.incomplete   10.69GB まで
+    2/5  ...f3963829.36e4a1d0.incomplete   12.34GB まで
+    3/5  ...f3963829.f0127b01.incomplete   17.76GB まで
+
+前半の blob の SHA は同じで、後ろの乱数部分が毎回変わる。19.09GB の1ファイルに対して
+書きかけが 30GB 積み上がり、空きを削るだけだった。**取り直しの前に捨てる。**
+
+**同じ実体を2度数えない。** roots には同じディレクトリが並ぶことがあり(Colab は
+HOME=/root なので INCOMPLETE_ROOTS の2つが一致する)、重複したまま数えて書きかけの
+合計が実際の2倍に見えていた。上の計測はその二重計上を取り除いた値。
+
+空きが MIN_FREE_GB を切ったら理由を書いて打ち切る。**取れないまま GPU の時間を
+使い続けない。**
 """
 
 from __future__ import annotations
@@ -53,14 +65,27 @@ INCOMPLETE_ROOTS = (
 
 
 def partials(roots) -> list[Path]:
-    """書きかけファイルの一覧。取れないディレクトリは黙って飛ばす。"""
+    """書きかけファイルの一覧。取れないディレクトリは黙って飛ばす。
+
+    **同じ実体は1度だけ返す。** INCOMPLETE_ROOTS は /root/.cache/huggingface と
+    $HOME/.cache/huggingface を並べているが、Colab は HOME=/root なので同じ
+    ディレクトリを指す。重複したまま数えて、書きかけの合計が実際の2倍に見えていた。
+    """
     out: list[Path] = []
+    seen: set[Path] = set()
     for root in roots:
         d = Path(root)
         try:
             if not d.exists():
                 continue
-            out += [f for f in d.rglob("*.incomplete") if f.is_file()]
+            for f in d.rglob("*.incomplete"):
+                if not f.is_file():
+                    continue
+                key = f.resolve()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(f)
         except OSError:
             continue
     return out
@@ -114,24 +139,20 @@ def free_gb(path) -> float | None:
         return None
 
 
-def purge(roots, log, why: str, older_than: float | None = None) -> int:
+def purge(roots, log, why: str) -> int:
     """書きかけを捨てる。捨てたバイト数を返す。
 
-    **殺して取り直すと、書きかけが別名で作られることがある。** Xet と素の HTTP は
-    一時ファイル名の付け方が違うため、経路が変わると前の書きかけは再開に使われず
+    **殺して取り直すと、書きかけは別名で作られる。** 前の書きかけは再開に使われず
     そのまま残る。21GB 級が数本残るとディスクを食い潰し、次のファイルが
     `No space left on device` で落ちる。**再開に使えない書きかけは、その場で捨てる。**
 
-    older_than を渡すと、それより古いものだけを消す(直前の試行で書いていた分は
-    再開に使えるので残す)。
+    以前は「直前の試行の分は再開に使えるので残す」として mtime で選り分けていたが、
+    2026-08-18 の計測で再開が効かないと分かったので、選り分けをやめた。
     """
     freed = 0
     for f in partials(roots):
         try:
-            st = f.stat()
-            if older_than is not None and st.st_mtime >= older_than:
-                continue
-            freed += st.st_size
+            freed += f.stat().st_size
             f.unlink()
         except OSError:
             continue
@@ -173,7 +194,6 @@ def download(
     disk = Path(local_dir) if local_dir else Path(roots[0])
 
     last_error = "原因不明"
-    attempt_started = time.time()
     for attempt in range(1, ATTEMPTS + 1):
         disable_xet = attempt == ATTEMPTS  # 最後の1回は遅くても確実な経路で
         if disable_xet:
@@ -181,9 +201,10 @@ def download(
             # 経路が変わると書きかけは再利用されない。残すとディスクを食うだけ
             purge(roots, log, "Xet から素の HTTP へ切り替えるので再開できない")
         elif attempt > 1:
-            # 前の試行より古い書きかけは、もう再開に使われない孤児
-            purge(roots, log, "前の試行より古い", older_than=attempt_started)
-        attempt_started = time.time()
+            # **再開は効かないので、取り直しの前に捨てる。** 残しても次の試行は
+            # 別名で最初から書き始める。空きを削り、詰まるほど書き込みが遅くなって
+            # 次の stall を呼ぶだけだった
+            purge(roots, log, "再開に使われないので取り直しの前に捨てる")
         # **試行の頭で内訳を残す。** 合計だけでは再開が効いているか分からない。
         # 前の試行の終わりの姿でもあるので、並べれば取り直しの効き方が読める
         log(f"[開始] {attempt}/{ATTEMPTS} {describe_partials(roots)}")

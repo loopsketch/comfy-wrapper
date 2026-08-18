@@ -31,7 +31,7 @@ works/.rescue/<セッション名>/<ディレクトリ名>/。
 
 「何も進んでいない」と見なすのは、次のどれでもないとき。
 
-- ディスク(書きかけを含む)が伸びている  … 取得中
+- ディスクが伸びている                   … 取得中(書きかけの分も使用量に出る)
 - ディスクが減った                       … 書きかけを捨てて取り直している
 - ComfyUI のキューに積まれている        … 生成中
 - ComfyUI / uvicorn のプロセスがある     … 起動中(H3 は 21GB を積むので数分かかる)
@@ -91,9 +91,11 @@ RESCUE_ROOT = Path("/app/works/.rescue")
 
 # Colab 側で1回だけ実行して、進捗の材料をまとめて取る。
 #
-# ディスクの使用量だけでは足りない。hf_hub_download は 19GB 級の1ファイルを
-# `.incomplete` に書き続けるため、その最中は使用量の刻みが粗く「止まっている」ように
-# 見える。**書きかけファイルの合計サイズ**を足して見る。
+# 書きかけの合計も取る。**ただし使用量に足さない。** HF のキャッシュは /content と
+# 同じファイルシステムに載るので、`.incomplete` が伸びれば使用量も同じだけ伸びる。
+# 足すと同じバイトを2度数えることになり、速度表示が倍に振れていた
+# (2026-08-18: 使用量 +0.2GB と書きかけ +0.2GB が並んで出ている)。
+# 書きかけは、何をしている最中なのかを読むために別立てで持つ。
 PROBE = """
 import json, os, shutil, urllib.request
 from pathlib import Path
@@ -106,7 +108,12 @@ t, u, f = shutil.disk_usage('/content')
 # hf_hub_download なので /root/.cache/huggingface に落ちるが、
 # download_models.py(H3) は local_dir を渡すので ComfyUI/models/.cache に落ちる。
 # 片方しか見ないと、H3 の取得中ずっと「書きかけ 0.0GB」に見える。
+#
+# **同じ実体を2度数えない。** 上の2つは Colab では同じディレクトリになる
+# (HOME=/root)。重複したまま足していたので、書きかけの合計が実際の2倍に見え、
+# 速度表示も倍に振れていた(2026-08-18 に 848MB/s と出た回の実体は半分)
 inc = 0
+seen = set()
 for base in ('/root/.cache/huggingface',
              str(Path.home() / '.cache' / 'huggingface'),
              '/content/ComfyUI/models/.cache'):
@@ -116,7 +123,14 @@ for base in ('/root/.cache/huggingface',
         d = Path(base)
         if not d.exists():
             continue
-        inc += sum(x.stat().st_size for x in d.rglob('*.incomplete') if x.is_file())
+        for x in d.rglob('*.incomplete'):
+            if not x.is_file():
+                continue
+            key = str(x.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            inc += x.stat().st_size
     except OSError:
         continue
 try:
@@ -329,7 +343,7 @@ def _stop(session: str, reason: str) -> None:
 
 
 def _disk_move(total: float, last_used: float | None) -> str:
-    """ディスク(書きかけ込み)の動き。"init" / "grew" / "shrank" / "flat" を返す。
+    """ディスク使用量の動き。"init" / "grew" / "shrank" / "flat" を返す。
 
     **減ったことを、伸びたことと同じ重さで見る。** 取得の途中で書きかけを捨てると
     使用量は落ちる。過去の最大だけを基準にすると、捨てた分を埋め直すまで進捗と
@@ -411,9 +425,8 @@ def main() -> None:
         if probe is not None:
             queue = probe["queue"]
             inc = probe.get("incomplete_gb", 0.0)
-            # 書きかけのウェイトも進捗のうち。19GB の1ファイル取得中に
-            # 「止まっている」と誤判定しないため
-            total = probe["used_gb"] + inc
+            # 書きかけは使用量に含まれている(同じファイルシステム)。足さない
+            total = probe["used_gb"]
 
             if queue >= 0 and not ready_logged:
                 # ここから手元で produce を投げられる

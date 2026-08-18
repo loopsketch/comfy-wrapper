@@ -76,26 +76,41 @@ class PurgeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
-    def test_purge_removes_only_the_stale_partials(self):
-        """直前の試行で書いていた分は再開に使うので残す。"""
+    def test_purge_removes_the_newest_partial_too(self):
+        """直前の試行の分も捨てる。再開に使われないと計測で分かったため。
+
+        以前は mtime で選り分けて「直前の分は残す」としていた。実際には試行ごとに
+        別名の .incomplete が作られ、残した分は一度も使われずディスクを削るだけだった。
+        """
         d = self.tmp / "download"
         d.mkdir()
-        old, new = d / "old.incomplete", d / "new.incomplete"
-        old.write_bytes(b"x" * 1000)
+        stale, fresh = d / "old.incomplete", d / "new.incomplete"
+        stale.write_bytes(b"x" * 1000)
+        os.utime(stale, (time.time() - 600, time.time() - 600))
+        fresh.write_bytes(b"y" * 500)
 
-        # cutoff = 直前の試行が始まった時刻。これ以降に書かれたものが「生きている」
-        cutoff = time.time()
-        os.utime(old, (cutoff - 600, cutoff - 600))
-        time.sleep(0.01)
-        new.write_bytes(b"y" * 500)
+        freed = rd.purge([str(self.tmp)], lambda *_: None, "テスト")
 
-        freed = rd.purge([str(self.tmp)], lambda *_: None, "テスト", older_than=cutoff)
+        self.assertEqual(freed, 1500)
+        self.assertFalse(stale.exists())
+        self.assertFalse(fresh.exists())
 
-        self.assertEqual(freed, 1000)
-        self.assertFalse(old.exists())
-        self.assertTrue(new.exists())
+    def test_purge_counts_a_shared_root_once(self):
+        """同じディレクトリが roots に2度並んでも、二重に数えない。
 
-    def test_purge_without_cutoff_removes_everything(self):
+        Colab は HOME=/root なので INCOMPLETE_ROOTS の2つが一致する。重複した分だけ
+        書きかけの合計が倍に見えていた。
+        """
+        d = self.tmp / "download"
+        d.mkdir()
+        (d / "a.incomplete").write_bytes(b"x" * 400)
+
+        roots = [str(self.tmp), str(self.tmp)]
+        self.assertEqual(len(rd.partials(roots)), 1)
+        self.assertEqual(rd.incomplete_bytes(roots), 400)
+        self.assertEqual(rd.purge(roots, lambda *_: None, "テスト"), 400)
+
+    def test_purge_removes_everything(self):
         """経路が変わると再開できないので、全部捨てる。"""
         d = self.tmp / "download"
         d.mkdir()
