@@ -23,6 +23,8 @@ GET  /v1/jobs/{id} ->  状態
 GET  /v1/jobs/{id}/video -> mp4
 ```
 
+設計判断・実測記録・モデルの選び方・つまずいたときの対処は [docs/](docs/) にあります。
+
 ## 特徴
 
 - **複数モデルを同じ API で扱える。** 動画は MiniMax H3 / Wan2.2 (14B MoE・TI2V-5B・S2V) /
@@ -39,7 +41,7 @@ GET  /v1/jobs/{id}/video -> mp4
   `--ref ./ref.png` も `--out ./hero.png` も CWD 相対のまま通ります。
 - **ホストに CUDA も ComfyUI も要らない。** コンテナは `client` / `colab` / `tunnel` の3つで、
   どれも `python:3.12-slim` です。
-- **課金を止める見張り。** Colab は GPU の稼働時間で課金されるので、`colab_watch.sh` が
+- **課金を止める監視。** Colab は GPU の稼働時間で課金されるので、`colab_watch.sh` が
   作業中はランタイムを保ち、アイドルや上限時間に達したら成果物を回収してから停止します。
 - **仕上げの経路つき。** `POST /v1/postprocess` でフレーム補間とアップスケールを通し、
   4K / 24p まで持っていけます。
@@ -123,10 +125,10 @@ cw up --setup image --models z-image --gpu L4 --max 60
 確保 → コードとキーの送付 → 構築 → トンネル まで無人で進み、**セッションは残ります**
 (`cw run` と違って止めません)。ComfyUI の導入とウェイトの取得で 15〜25 分かかります。
 `--setup` は `image`(静止画)/ `video`(Wan2.2 / LTX)/ `h3`(MiniMax H3)。
-`--max` は見張りの上限分で、超えたら見張りが強制停止します。
+`--max` は監視の上限分で、超えたら監視が強制停止します。
 
 ```bash
-cw status     # compose / セッション / 見張り / 疎通 を1画面で
+cw status     # compose / セッション / 監視 / 疎通 を1画面で
 ```
 
 ### 3. 生成する
@@ -152,7 +154,7 @@ cw jobs
 cw models     # どのモデルで何ができるか・1秒あたりいくらか
 ```
 
-出力は CWD に書き、**ジョブの台帳はリポジトリの `.colab/jobs/` に絶対パスで**残ります。
+出力は CWD に書き、**ジョブの記録はリポジトリの `.colab/jobs/` に絶対パスで**残ります。
 呼ぶ側のプロジェクトを汚さず、別のディレクトリから `cw jobs` を叩いても同じ場所へ
 回収できます。
 
@@ -162,11 +164,11 @@ cw models     # どのモデルで何ができるか・1秒あたりいくらか
 cw stop
 ```
 
-見張り → セッション → **サーバへの問い合わせ** → トンネル の順に畳みます。
-台帳から消えることとリモートが止まることは別なので、最後に現物を出します。
+監視 → セッション → **サーバへの問い合わせ** → トンネル の順に畳みます。
+一覧から消えることとリモートが止まることは別なので、最後に現物を出します。
 GPU の稼働時間で課金されるので、止まっていることを必ず確かめてください。
 
-最後の一覧に `[?]` で始まる名前なしのものが残っていたら、台帳から外れた割り当てです。
+最後の一覧に `[?]` で始まる名前なしのものが残っていたら、それは管理から外れた割り当てです。
 `cw stop -s <名前>` では引けないので `cw stop --orphans` で解放してください
 (中身は `src/scripts/colab_unassign.py`。名前つきも含めて畳むなら `--all`)。
 
@@ -292,7 +294,7 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
 
 ## 他のプロジェクトから使う
 
-**このリポジトリは1台に1つだけ動かし、他のプロジェクトはコピーせずに HTTP で頼む。** `.colab/` の OAuth トークン・SSH 鍵・セッション台帳は1つしか持てず、
+**このリポジトリは1台に1つだけ動かし、他のプロジェクトはコピーせずに HTTP で頼む。** `.colab/` の OAuth トークン・SSH 鍵・セッション一覧は1つしか持てず、
 複製すると `Already-active SSH session (HTTP 429)` やアイドル刈り取りの取り合いになります。
 呼ぶ側に `colab` / `tunnel` サービスを持たせないでください。
 
@@ -302,11 +304,11 @@ curl -X POST "$COLAB_ENDPOINT/v1/generate" \
 # 呼ぶ側のプロジェクトで
 uv tool install --editable /path/to/comfy-wrapper
 cd /path/to/your-project
-cw image "..." --out ./assets/hero.png     # 出力はこのプロジェクト、台帳は comfy-wrapper 側
+cw image "..." --out ./assets/hero.png     # 出力はこのプロジェクト、記録は comfy-wrapper 側
 ```
 
 `cw` は1台に1つのリポジトリを指すだけなので、複製は起きません。生成物は呼んだ場所に
-書かれ、ジョブの台帳と鍵は comfy-wrapper 側に集まります。
+書かれ、ジョブの記録と鍵は comfy-wrapper 側に集まります。
 
 コードから頼むときは共有ネットワークを1本張ると、宛先が `http://tunnel:8000` のまま
 解決します。ホストにポートを晒さずに済み、呼ぶ側はコードも宛先の設定も変えなくて
@@ -344,7 +346,7 @@ SHA-256 のハッシュだけ**なので、発行と反映 (`cw key push`) は�
 
 - 投入は 202 で返り、生成は裏で走る。**届いていれば投げ直さない**(二重生成は
   GPU 時間をそのまま捨てる)
-- ジョブ台帳はサーバのメモリにしかない。ランタイムを止めると回収できない
+- ジョブの記録はサーバのメモリにしかない。ランタイムを止めると回収できない
 - ランタイムの確保と停止は自前生成サーバ側の仕事。`/health` に届かなければ「いま動いていない」
 
 実例は [music-video-creator2](https://github.com/loopsketch/music-video-creator2) です
@@ -533,8 +535,8 @@ src/
   scripts/             手元と Colab 側の運用スクリプト
   lib/                 手元側の共有層(宛先・キー・リトライ・単価)
 tests/                 単体テスト(標準の unittest。GPU もネットワークも不要)
-works/                 生成物・測定結果・見張りの回収先(git 管理外)
-.colab/                トークン・SSH 鍵・キーストア・ジョブ台帳(git 管理外)
+works/                 生成物・測定結果・監視の回収先(git 管理外)
+.colab/                トークン・SSH 鍵・キーストア・ジョブの記録(git 管理外)
 ```
 
 主なモジュール(パスは `src/` からの相対):
@@ -550,7 +552,7 @@ works/                 生成物・測定結果・見張りの回収先(git 管�
 | `setup/download_*.py` | ウェイトの取得 |
 | `scripts/colab.sh` | Colab CLI のラッパ(常駐コンテナ経由で叩く) |
 | `scripts/colab_run.sh` | 確保 → 構築 → 実行 → 停止 を無人で1本流す |
-| `scripts/colab_watch.sh` | 見張り。keep-alive・進捗記録・自動停止と成果物の回収 |
+| `scripts/colab_watch.sh` | 監視。keep-alive・進捗記録・自動停止と成果物の回収 |
 | `scripts/generate_image.py` | 静止画の生成を投入して png を回収する |
 | `scripts/generate_video.py` | 動画の生成を投入して mp4 を回収する(引数なしなら疎通テスト) |
 | `scripts/postprocess.py` | 仕上げ(補間 + 拡大)の投入と回収 |
@@ -570,7 +572,7 @@ works/                 生成物・測定結果・見張りの回収先(git 管�
 | `COLAB_ENDPOINT` | コンテナ内 `http://tunnel:8000` / ホスト `http://127.0.0.1:8000` | client・cw。Colab 以外に立てたときに上書きする |
 | `COLAB_SESSION` | `comfy` | tunnel。どのセッションへ通すか |
 | `COLAB_AUTH_LOOP_MINUTES` | `30` | colab。OAuth 延長の間隔 |
-| `TZ` | `Asia/Tokyo` | colab。見張りのログの時刻 |
+| `TZ` | `Asia/Tokyo` | colab。監視のログの時刻 |
 | `COMFY_URL` | `http://127.0.0.1:8188` | server |
 | `WRAPPER_KEYS_PATH` | ランタイム上のパス | server。キーストアの置き場 |
 | `H3_*` / `LTX_*` / `LTX25_*` / `CW_*` | モデルごと | server。ウェイトのファイル名の上書き |
@@ -600,7 +602,7 @@ SHA-256 のハッシュだけなので、平文のキーはリモートに存在
 本ソフトウェアは無保証で提供されます。作者は一切の責任を負いません。
 
 - **課金は利用者の責任です。** 本プロジェクトは Colab の有料 GPU ランタイム(都度課金)を
-  使います。見張り(`colab_watch.sh`)は上限時間とアイドルでランタイムを止めますが、
+  使います。監視(`colab_watch.sh`)は上限時間とアイドルでランタイムを止めますが、
   **停止を保証するものではありません。** 認証切れ・ネットワーク断・スクリプトの異常終了などで
   停止に失敗し、意図しない課金が発生しても、作者は一切の責任を負いません。ランタイムが
   止まっていることは、利用者自身が `cw sessions`(サーバへの問い合わせ)で確認してください。

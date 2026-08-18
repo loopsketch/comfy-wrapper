@@ -1,4 +1,4 @@
-"""ランタイムの見張り。compose の `colab` 常駐コンテナの中で動かす。
+"""ランタイムの監視。compose の `colab` 常駐コンテナの中で動かす。
 
 起動・停止は colab_watch.sh から行う。見るのは 4 つ。
 
@@ -13,7 +13,7 @@
 3 が要る理由: GPU の稼働時間で課金されるのに、待ちに入ると誰も止めない。
 **人が見ていない前提で設計する。**
 
-4 が要る理由: 認証が切れると probe が何も返さなくなる。**見張りが盲目になったことに
+4 が要る理由: 認証が切れると probe が何も返さなくなる。**監視が盲目になったことに
 気づけないのが一番まずい。** ランタイムが生きていれば課金は続く。
 
     COLAB_MAX_MINUTES   確保からの上限(既定 30分)。超えたら止める
@@ -49,7 +49,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# 同じ scripts/ に置いてある。見張りはコンテナ内で直接動かすので普通に import できる
+# 同じ scripts/ に置いてある。監視はコンテナ内で直接動かすので普通に import できる
 # (`colab exec -f` で単体送信されるスクリプトとは事情が違う)
 import colab_auth
 
@@ -81,7 +81,7 @@ RESCUE_DIRS = [
         "/content/logs:/content/jobs",
     ).split(":") if d
 ]
-# **ここだけ /app 固定でよい。** この見張りは colab コンテナの中でしか動かない
+# **ここだけ /app 固定でよい。** この監視は colab コンテナの中でしか動かない
 # (colab_watch.sh が docker compose exec で起こす)。手元から直接叩く経路は無い
 RESCUE_ROOT = Path("/app/works/.rescue")
 
@@ -106,7 +106,7 @@ inc = 0
 for base in ('/root/.cache/huggingface',
              str(Path.home() / '.cache' / 'huggingface'),
              '/content/ComfyUI/models/.cache'):
-    # 例外を投げると probe が丸ごと落ち、見張りは何も分からないまま待ち続ける。
+    # 例外を投げると probe が丸ごと落ち、監視は何も分からないまま待ち続ける。
     # 分からないより、その項目だけ 0 にして残りを返す方がよい
     try:
         d = Path(base)
@@ -121,7 +121,7 @@ try:
 except Exception:
     n = -1
 # **API(8000) も見る。** 生成は ComfyUI ではなく API を通して投げるので、
-# API だけ落ちていると手元からは何も投げられないのに、見張りは「ComfyUI は
+# API だけ落ちていると手元からは何も投げられないのに、監視は「ComfyUI は
 # 生きている」と見て黙っている。API が上がらないまま生成を投げて
 # ConnectionReset で落ちたことがある
 try:
@@ -218,14 +218,14 @@ _auth_logged: str | None = None
 def _check_auth(force: bool = False, reason: str = "") -> str:
     """OAuth を延長し、状態が変わったらログに出す。返すのは state の文字列。
 
-    切れていても見張りにできることは無い(`colab stop` も認証を要るため、
+    切れていても監視にできることは無い(`colab stop` も認証を要るため、
     ランタイムを止めることすらできない)。**できるのは大きな声で言うことだけ**なので、
     ok 以外は毎回書く。
     """
     global _auth_logged
     try:
         state = colab_auth.check_and_record(force=force)
-    except Exception as e:  # 認証の確認で見張りを落とさない
+    except Exception as e:  # 認証の確認で監視を落とさない
         _log(f"認証の確認に失敗した: {type(e).__name__}: {e}")
         return _auth_logged or "unknown"
     kind = state.get("state", "unknown")
@@ -283,7 +283,7 @@ def _rescue(session: str) -> None:
 def _stop(session: str, reason: str) -> None:
     """止める。**ここで諦めない。** 止め損ねると課金だけが続く。
 
-    `colab stop` が返ってこないことがある。例外で見張りごと死ぬと、ランタイムは
+    `colab stop` が返ってこないことがある。例外で監視ごと死ぬと、ランタイムは
     生きたまま誰も見ていない状態になる。**課金の打ち切りが存在理由である以上、
     ここだけは落ちてはいけない。**
     """
@@ -315,7 +315,7 @@ def _stop(session: str, reason: str) -> None:
         )
 
     # **状態は回収と停止が終わってから書く。** 先に書くと、これを見た colab_run.sh が
-    # 後片付けで見張りを pkill し、回収が始まる前に殺してしまう。実際それで
+    # 後片付けで監視を pkill し、回収が始まる前に殺してしまう。実際それで
     # setup.log を取り逃がした。
     #
     # 止め損ねても stopped は書く。colab_run.sh はこれを見て自分の後片付け
@@ -329,7 +329,7 @@ def main() -> None:
     started = time.time()
     _set_state("building")
     _log(
-        f"見張りを始めた (session={session}, {INTERVAL:.0f}秒ごと, "
+        f"監視を始めた (session={session}, {INTERVAL:.0f}秒ごと, "
         f"上限 {MAX_MINUTES:.0f}分, アイドル {IDLE_MINUTES:.0f}分で自動停止)"
     )
 
@@ -351,7 +351,7 @@ def main() -> None:
 
         state = _session(session)
         if not state:
-            _log("セッションが無くなったので見張りを終える")
+            _log("セッションが無くなったので監視を終える")
             _set_state("stopped", reason="セッションが無くなった")
             return
 

@@ -43,8 +43,8 @@ from lib.video_sizes import MODEL_RESOLUTIONS, output_size
 
 # 宛先とキーの解決は colab_link に集約してある(旧名の環境変数も読む)
 ENDPOINT = colab_link.read_endpoint()
-# 測定の台帳はリポジトリ側に集約する。回収した動画の置き場は submit のときの CWD
-# (--out-dir で変えられる) を台帳に絶対パスで残し、status がそこへ書く
+# 測定の記録はリポジトリ側に集約する。回収した動画の置き場は submit のときの CWD
+# (--out-dir で変えられる) を記録に絶対パスで残し、status がそこへ書く
 STATE_DIR = colab_link.JOBS_DIR
 
 # Wan / LTX は H3 のような形式プロンプトを取らないので、素のシネマ的な描写で書く。
@@ -186,7 +186,7 @@ def cmd_status(args) -> int:
         return 1
 
     for run in state["runs"]:
-        # **ジョブ台帳はサーバのメモリにしかない。** セッションを立て直すと消えるので、
+        # **ジョブの記録はサーバのメモリにしかない。** セッションを立て直すと消えるので、
         # 前回の run が残っていても 404 で全体を落とさない
         try:
             job = json.loads(_req("GET", f"/v1/jobs/{run['job_id']}"))
@@ -199,7 +199,7 @@ def cmd_status(args) -> int:
             # --force なしでは二度と投げられなくなる
             if run.get("status") not in TERMINAL:
                 run["status"] = "lost"
-            print(f"{run['run']}本目 {run['job_id']}: 前のセッションのジョブ (台帳から消えている)")
+            print(f"{run['run']}本目 {run['job_id']}: 前のセッションのジョブ (記録から消えている)")
             continue
         run["status"] = job["status"]
         run["elapsed"] = _elapsed(job)

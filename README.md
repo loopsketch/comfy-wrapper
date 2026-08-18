@@ -23,6 +23,9 @@ GET  /v1/jobs/{id} ->  status
 GET  /v1/jobs/{id}/video -> mp4
 ```
 
+Design decisions, measured numbers, model selection and troubleshooting live in
+[docs/](docs/) (Japanese).
+
 ## Features
 
 - **One API for several models.** MiniMax H3, Wan2.2 (14B MoE / TI2V-5B / S2V),

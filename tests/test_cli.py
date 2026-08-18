@@ -169,7 +169,7 @@ class OpsTest(unittest.TestCase):
             cw.main(["run"])
 
     def test_stop_checks_the_server_and_folds_the_tunnel(self):
-        """**台帳から消えることと、リモートが止まることは別。** 止めたあと現物を見ること。"""
+        """**一覧から消えることと、リモートが止まることは別。** 止めたあと現物を見ること。"""
         with mock.patch("builtins.print"):
             cw.main(["stop"])
         self.assertEqual(

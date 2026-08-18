@@ -3,7 +3,7 @@
 ここで固定したいのは2つ。
 
 - **どんな失敗でも例外を投げない。** これは無人のループから呼ばれる。落ちると
-  「切れたことにも気づけない」状態になり、見張りが盲目のまま上限まで回る
+  「切れたことにも気づけない」状態になり、監視が盲目のまま上限まで回る
 - **切れているのか、こちらの都合で見られないだけなのかを混ぜない。**
   再認証が要るのは reauth_needed だけで、判定できないときは unknown にする
 
@@ -105,7 +105,7 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(auth.check()["state"], "reauth_needed")
 
     def test_state_is_always_recorded(self):
-        """入口 (colab_run.sh) と見張りが読むので、失敗した回こそ残す必要がある。"""
+        """入口 (colab_run.sh) と監視が読むので、失敗した回こそ残す必要がある。"""
         self.enterContext(patch.object(auth, "TOKEN", self.tmp / "token.json"))
         self.enterContext(patch.object(auth, "STATE", self.tmp / "auth-state.json"))
         state = auth.check_and_record()

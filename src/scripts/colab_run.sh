@@ -16,7 +16,7 @@
 #
 #   -s SESSION   セッション名(既定 comfy)
 #   --gpu GPU    既定 L4。A100 の 3.44分の1 の単価で 1.44倍しか遅くない
-#   --max MIN    見張りの上限分(既定 60)。これを超えたら見張りが強制停止する
+#   --max MIN    監視の上限分(既定 60)。これを超えたら監視が強制停止する
 #   --idle MIN   何も進んでいないと見なすまでの分(既定 8)
 #   --setup KIND image(静止画) | h3(MiniMax H3) | video(Wan2.2 / LTX-2.3)。既定 image
 #   --models "…" 取得するモデル。既定は setup 側の既定
@@ -66,14 +66,14 @@ case "$KIND" in
 esac
 
 LOG=.colab/keepalive-watch.log
-# 見張りが書く機械可読の状態(building / ready / stopped)。
+# 監視が書く機械可読の状態(building / ready / stopped)。
 # **ログの日本語を grep しない。** 起動行の「アイドル 8分で自動停止」を停止と
 # 読み違えて、構築開始15秒で自分を止めた
 STATE=.colab/watch-state.json
 
 say() { printf '\n=== %s\n' "$1"; }
 
-# 止める前にリモートのログを吐かせる。**回収は見張りの自動停止時にしか走らない**ので、
+# 止める前にリモートのログを吐かせる。**回収は監視の自動停止時にしか走らない**ので、
 # colab_run.sh が自力で終わるとログごと消える。API が上がらなかった回の原因を
 # 追えなかった。落ちた理由は、落ちたセッションの中にしか無い
 dump_remote_logs() {
@@ -89,7 +89,7 @@ for name in ("api", "comfyui", "setup"):
 PY
 }
 
-# 見張りの状態を1語で返す。まだ書かれていなければ空
+# 監視の状態を1語で返す。まだ書かれていなければ空
 read_state() {
   [ -f "$STATE" ] || return 0
   python3 -c "
@@ -115,7 +115,7 @@ cleanup() {
   say "セッションを止めます"
   src/scripts/colab_watch.sh --stop >/dev/null 2>&1 || true
   src/scripts/colab.sh stop -s "$SESSION" 2>&1 | tail -3 || true
-  # **台帳から消えることと、リモートが止まることは別。** colab exec が
+  # **一覧から消えることと、リモートが止まることは別。** colab exec が
   # 失敗すると colab-cli はセッションを prune するので stop が
   # 「not found」になる。実体が生きていれば課金が続くため、現物を必ず見る
   say "サーバ側に残っていないか確認します"
@@ -158,7 +158,7 @@ trap cleanup EXIT INT TERM
 
 # 前回の状態を先に消す。残っていると今回のものと読み違える
 rm -f "$STATE"
-# 見張りは確保の直後に始める。ここから先はどこで転んでも上限で止まる
+# 監視は確保の直後に始める。ここから先はどこで転んでも上限で止まる
 COLAB_IDLE_MINUTES="$IDLE" src/scripts/colab_watch.sh "$SESSION" "$MAX"
 
 say "コードとキーを送ります"
@@ -180,18 +180,18 @@ fi
 say "構築を始めます (取得〜サーバ起動まで無人で進みます)"
 src/scripts/colab.sh exec -s "$SESSION" -f "$SETUP"
 
-say "準備完了を待ちます (見張りの上限 ${MAX}分を超えたら打ち切られます)"
-# **この待ちにも期限を付ける。** 見張りが落ちると誰も上限を数えなくなり、
-# 待ち続けたぶんがそのまま課金になる。見張りより少しだけ長く待って諦める
+say "準備完了を待ちます (監視の上限 ${MAX}分を超えたら打ち切られます)"
+# **この待ちにも期限を付ける。** 監視が落ちると誰も上限を数えなくなり、
+# 待ち続けたぶんがそのまま課金になる。監視より少しだけ長く待って諦める
 DEADLINE=$(( $(date +%s) + (MAX + 5) * 60 ))
 while true; do
   case "$(read_state)" in
     ready)
       break ;;
     stopped)
-      say "準備できる前に見張りが打ち切りました。ログ: $LOG"
+      say "準備できる前に監視が打ち切りました。ログ: $LOG"
       tail -5 "$LOG"
-      # 見張りが回収した構築ログ。停止の理由はここにしか残らない
+      # 監視が回収した構築ログ。停止の理由はここにしか残らない
       if [ -f "works/.rescue/$SESSION/logs/setup.log" ]; then
         say "回収した構築ログの末尾 (works/.rescue/$SESSION/logs/setup.log)"
         tail -25 "works/.rescue/$SESSION/logs/setup.log"
@@ -199,7 +199,7 @@ while true; do
       exit 1 ;;
   esac
   if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-    say "$((MAX + 5))分待っても準備できませんでした (見張りが落ちた可能性)。ログ: $LOG"
+    say "$((MAX + 5))分待っても準備できませんでした (監視が落ちた可能性)。ログ: $LOG"
     tail -5 "$LOG"
     exit 1
   fi
@@ -261,7 +261,7 @@ for i in $(seq 1 $TRIES); do
 done
 # **黙って先へ進まない。** 60回失敗しても素通りする作りだったため、API が
 # 上がっていないまま生成を投げて ConnectionReset で落ちた。
-# 見張りは ComfyUI(8188)しか見ないので、API(8000)の不在はここでしか気づけない
+# 監視は ComfyUI(8188)しか見ないので、API(8000)の不在はここでしか気づけない
 if [ "$api_up" != 1 ]; then
   say "API ($NEED) が10分たっても応答しません。トンネルの転送先が落ちています"
   docker compose logs --tail 5 tunnel 2>&1 | sed 's/^/  /'

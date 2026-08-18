@@ -38,7 +38,7 @@ from lib import colab_link, mp4_probe
 
 # 宛先とキーの解決は colab_link に集約してある(旧名の環境変数も読む)
 ENDPOINT = colab_link.read_endpoint()
-# 台帳は呼ぶ側のプロジェクトを汚さないようリポジトリ側に集約する。
+# 記録は呼ぶ側のプロジェクトを汚さないようリポジトリ側に集約する。
 # 出力先は絶対パスで持つので、別の CWD から回収しても同じ場所に落ちる
 STATE = colab_link.JOBS_DIR / "postprocess.json"
 
@@ -204,7 +204,7 @@ def cmd_submit(args) -> int:
     state["jobs"].append({
         "job_id": job["job_id"],
         "source": str(source),
-        # 台帳に相対パスを書くと、別の CWD から回収したときに違う場所へ落ちる
+        # 記録に相対パスを書くと、別の CWD から回収したときに違う場所へ落ちる
         "out": str(source.with_name(f"{source.stem}_post.mp4")),
         "size": f"{width or src['width']}x{height or src['height']}",
         "fps": out_fps,
@@ -221,7 +221,7 @@ def cmd_status(args) -> int:
         print("まだ投入していません")
         return 1
     for entry in state["jobs"]:
-        # 回収済みのものは問い合わせない。**ジョブ台帳はサーバのメモリにしかない**ので、
+        # 回収済みのものは問い合わせない。**ジョブの記録はサーバのメモリにしかない**ので、
         # セッションを立て直すと 404 になる。それで全体を落とすと、いま走っている
         # ジョブの結果まで回収できなくなる(measure_video.py と同じ扱いにする)
         if entry.get("done"):
@@ -231,7 +231,7 @@ def cmd_status(args) -> int:
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
-            print(f"{entry['job_id']}: 前のセッションのジョブ (台帳から消えている)")
+            print(f"{entry['job_id']}: 前のセッションのジョブ (記録から消えている)")
             entry["done"] = True
             continue
         line = f"{entry['job_id']} ({Path(entry['source']).name} -> {entry['size']}): {job['status']}"

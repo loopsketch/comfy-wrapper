@@ -10,7 +10,7 @@ LTX-2.3 で約 42GB、LTX-2.5 で約 40GB ある。どれを落とすかは cola
 確認は colab_setup_status.py を流す(H3 版と共通)。
 
 **取得のあと、そのままサーバまで起動する。** 人が colab_serve.py を打つまでの間は
-取得も生成も起動も走っておらず、見張りがアイドルと見て自動停止させてしまう。
+取得も生成も起動も走っておらず、監視がアイドルと見て自動停止させてしまう。
 
 このスクリプトは `colab exec -f` で単体送信されるので、他のスクリプトを import
 してはいけない(送られるのはこのファイルだけ)。前置きが colab_setup.py と
@@ -106,7 +106,7 @@ rm -rf /root/.cache/huggingface/xet {COMFY}/models/.cache
 df -h /content | tail -1
 touch {LOGS}/setup.done
 
-# 続けてサーバを起こす。ここで人待ちにすると見張りがアイドルと見て止めてしまう
+# 続けてサーバを起こす。ここで人待ちにすると監視がアイドルと見て止めてしまう
 echo "[5/5] ComfyUI と API を起動"
 python {WORK}/scripts/colab_serve.py
 echo "完了"

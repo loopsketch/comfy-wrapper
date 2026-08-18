@@ -105,7 +105,7 @@ class RepoHomeTest(unittest.TestCase):
                 self.assertEqual(colab_link.repo_home(), Path(tmp).resolve())
 
     def test_ledger_lives_under_the_repo(self):
-        """台帳は呼ぶ側の CWD ではなくリポジトリ側。別の場所から回収できるように。"""
+        """記録は呼ぶ側の CWD ではなくリポジトリ側。別の場所から回収できるように。"""
         self.assertEqual(colab_link.JOBS_DIR.parent, colab_link.COLAB_DIR)
         self.assertEqual(colab_link.COLAB_DIR.parent, colab_link.HOME)
 

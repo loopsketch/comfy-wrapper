@@ -70,9 +70,9 @@ cw — Colab の GPU 上の ComfyUI に生成を頼む
 運用 (内側で docker compose を呼ぶ):
   cw up [--setup image] [--models z-image] [--gpu L4] [--max 60]
   cw run [同上] -- <スクリプト...>         確保 -> 構築 -> 実行 -> 停止 を無人で
-  cw status                                compose / セッション / 見張り / 疎通
+  cw status                                compose / セッション / 監視 / 疎通
   cw sessions                              サーバに現物を問い合わせる
-  cw watch [セッション] [上限分]           見張りの開始・状態・停止
+  cw watch [セッション] [上限分]           監視の開始・状態・停止
   cw init [ssh|hf|skills]                  鍵・トークン・スキルを用意する
   cw auth [login [--code <code>]]          Colab の認証を見る・入れ直す
   cw tunnel up|restart|stop|logs           トンネルだけを扱う (セッションは触らない)
@@ -168,11 +168,11 @@ def cmd_measure(argv: list[str]) -> int:
 
 
 def cmd_jobs(argv: list[str]) -> int:
-    """投入済みを回収する。静止画と仕上げの台帳をまとめて見る。"""
+    """投入済みを回収する。静止画と仕上げの記録をまとめて見る。"""
     if argv:
         raise SystemExit("cw jobs は引数を取りません")
     rc = _call_script("generate_image", "cw jobs", ["status"])
-    # 仕上げは使っていないことの方が多い。台帳が無ければ黙って飛ばす
+    # 仕上げは使っていないことの方が多い。記録が無ければ黙って飛ばす
     if (colab_link.JOBS_DIR / "postprocess.json").exists():
         _section("仕上げ")
         rc = _call_script("postprocess", "cw jobs", ["status"]) or rc
@@ -369,16 +369,16 @@ def cmd_stop(argv: list[str]) -> int:
                         help="名前の無い割り当て ([?] で出るもの) も解放する")
     args = parser.parse_args(argv)
 
-    _section("見張りを止めます")
+    _section("監視を止めます")
     _sh("colab_watch.sh", "--stop")
     _section("セッションを止めます")
     rc = _sh("colab.sh", "stop", "-s", args.session)
-    # **名前が無い割り当ては stop -s では引けない。** 台帳を作り直した回や接続に
+    # **名前が無い割り当ては stop -s では引けない。** 一覧を作り直した回や接続に
     # 失敗した回に残り、放っておくと課金が続く
     if args.orphans:
         _section("名前の無い割り当てを解放します")
         _colab_exec("/app/src/scripts/colab_unassign.py")
-    # **台帳から消えることと、リモートが止まることは別。** 実体が生きていれば
+    # **一覧から消えることと、リモートが止まることは別。** 実体が生きていれば
     # 課金が続くので、止めたあとに必ずサーバへ問い合わせる
     _section("サーバ側に残っていないか確認します")
     _sh("colab.sh", "sessions")
@@ -402,7 +402,7 @@ def cmd_status(argv: list[str]) -> int:
     _section("Colab セッション (サーバへ問い合わせ)")
     _sh("colab.sh", "sessions")
 
-    _section("見張り")
+    _section("監視")
     _sh("colab_watch.sh", "--status", args.session)
 
     _section("疎通")
