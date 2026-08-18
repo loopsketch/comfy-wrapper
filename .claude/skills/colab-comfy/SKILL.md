@@ -63,7 +63,7 @@ SSH 鍵と Hugging Face のトークンを clone 先の `.colab/` に置く。�
 cw init                    # 何が足りないかを確認
 cw init ssh                # SSH 鍵を作る (ed25519)
 cw init hf < token.txt     # HF トークンを保存する (--token でも渡せる)
-cw init skills             # このスキルを別のプロジェクトへ入れる (--global もある)
+cw init skills             # スキル一式を別のプロジェクトへ入れる (--global もある)
 ```
 
 - 鍵は作り直さない
@@ -236,7 +236,7 @@ cw stop --orphans    # 名前の無い割り当て ([?] で出るもの) も解�
 - LTX-2.5 は `ltx-prompt` スキル
   - 散文の書き方、多ショットのつなぎ方、8k+1 のグリッド
 - MiniMax H3 は MiniMax 公式の `h3-prompt-writing` スキル
-  - `npx skills add https://github.com/MiniMax-AI/MiniMax-H3 --skill h3-prompt-writing`
+  - 入っていなければ `cw init skills` で一緒に入る
 
 ### H3 でこのラッパ固有になるところ
 

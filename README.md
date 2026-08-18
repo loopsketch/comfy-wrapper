@@ -232,13 +232,13 @@ then install the skills you want.
 uv tool install --editable /path/to/comfy-wrapper
 
 cd /path/to/your-project
-cw init skills          # install into this project (--global targets ~/.claude)
-cw init skills --h3     # also install MiniMax's official h3-prompt-writing
+cw init skills            # install into this project (--global targets ~/.claude)
+cw init skills --no-h3    # skip MiniMax's official h3-prompt-writing
 ```
 
-`cw init skills` installs from the clone rather than GitHub, so the skills always match
-the `cw` you have installed. It drives the
-[skills CLI](https://github.com/vercel-labs/skills), so the manual route is the same:
+`colab-comfy` and `ltx-prompt` install from the clone rather than GitHub, so they always
+match the `cw` you have installed; `h3-prompt-writing` is fetched from MiniMax. It drives
+the [skills CLI](https://github.com/vercel-labs/skills), so the manual route is the same:
 
 ```bash
 npx skills add /path/to/comfy-wrapper --skill colab-comfy --skill ltx-prompt
